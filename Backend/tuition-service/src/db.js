@@ -13,3 +13,16 @@ export const pool = mysql.createPool({
   queueLimit: 0,
   decimalNumbers: true
 });
+
+// Hàm kiểm tra kết nối CSDL lúc khởi động server
+export async function testConnection() {
+  try {
+    const connection = await pool.getConnection();
+    console.log('[Tuition Service] Kết nối cơ sở dữ liệu MySQL thành công!');
+    connection.release();
+    return true;
+  } catch (error) {
+    console.error('[Tuition Service] Lỗi kết nối MySQL:', error.message);
+    return false;
+  }
+}

@@ -3,7 +3,7 @@ import cors from 'cors';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import express from 'express';
-import { pool } from './db.js';
+import { pool, testConnection } from './db.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -122,6 +122,7 @@ app.post('/internal/deduct',  async (req, res) => {
 
 
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
+  await testConnection();
   console.log(`Auth Service is running on port ${PORT}`);
-});
+})
