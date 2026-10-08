@@ -1,0 +1,117 @@
+# HỆ THỐNG ĐÓNG HỌC PHÍ IBANKING (SOA - TDTU)
+> **Đồ án Giữa kỳ môn Kiến trúc Hướng Dịch vụ (CS504070) - Đại học Tôn Đức Thắng (TDTU)**  
+> **Mô hình**: Microservices Architecture (Node.js/Express + MySQL Docker + React Vite Frontend)
+
+---
+
+## 📌 1. TỔNG QUAN HỆ THỐNG & PHÂN CHIA CÔNG VIỆC
+
+Toàn bộ hệ thống Backend được phân rã thành **4 Microservices độc lập** (Loose Coupling) và 1 CSDL MySQL dùng chung:
+
+```
+Backend/
+├── auth-service/           [CỔNG 8001] [HOÀN THÀNH 100%] -> Quản lý User, Login JWT, Số dư & Khóa bi quan
+├── tuition-service/        [CỔNG 8002] [HOÀN THÀNH 100%] -> Tra cứu Sinh viên, Nợ học phí & Gạch nợ
+├── notification-service/   [CỔNG 8004] [CẦN LÀM]         -> Quản lý OTP 6 số, Gửi Email SMTP & Biên lai
+└── payment-service/        [CỔNG 8003] [CẦN LÀM]         -> ORCHESTRATOR điều phối FSM, Concurrency & Saga
+```
+
+---
+
+## ✅ 2. PHẦN ĐÃ HOÀN THÀNH (Auth & Tuition Service)
+*(Đã được kiểm thử tự động đạt 19/19 test cases 100% qua file `Backend/test-all.js`)*
+
+### 1. `auth-service` (Chạy tại: `http://localhost:8001`)
+* `POST /login`: Đăng nhập bằng `username` và `password`, mã hóa Bcrypt, trả về JWT Token và số dư khả dụng.
+* `GET /profile`: Lấy thông tin cá nhân và số dư mới nhất (Yêu cầu Header `Authorization: Bearer <token>`).
+* `POST /internal/deduct`: API nội bộ dành riêng cho Payment Service để trừ tiền:
+  - **Cơ chế**: Dùng **Pessimistic Locking (`SELECT balance FROM users WHERE user_id = ? FOR UPDATE`)** bên trong Transaction để chống chi vượt số dư (Double Spending).
+
+### 2. `tuition-service` (Chạy tại: `http://localhost:8002`)
+* `GET /lookup/:student_id`: Tra cứu sinh viên theo MSSV (VD: `524H0024`, `524H0129`), trả về thông tin sinh viên và danh sách học phí đã chuẩn hóa camelCase cho React.
+* `POST /internal/mark-paid`: API nội bộ dành cho Payment Service để gạch nợ:
+  - **Cơ chế**: Dùng **Atomic Conditional Update (`UPDATE tuition_fees SET status = 'Đã thanh toán' WHERE fee_id = ? AND status = 'Chưa thanh toán'`)**. Nếu có 2 người cùng đóng 1 hóa đơn, người thứ 2 gặp `affectedRows === 0` và bị chặn lại ngay lập tức với mã lỗi `409 CONCURRENCY_CONFLICT` (chống Double Payment).
+* `POST /internal/revert-paid`: API phục vụ **Bù hoàn Saga (Compensating Transaction)**: Hoàn tác trạng thái học phí từ `'Đã thanh toán'` về lại `'Chưa thanh toán'` nếu bước trừ tiền bên ví bị thất bại.
+
+---
+
+## 🚀 3. PHẦN VIỆC BẠN CẦN LÀM (GIAO CHO ĐỒNG ĐỘI)
+
+### 🔹 Dịch vụ 1: `notification-service` (Cổng 8004)
+**Nhiệm vụ**: Quản lý mã xác thực OTP và gửi thông báo qua Email SMTP.
+
+| Phương thức | Endpoint | Body yêu cầu | Nhiệm vụ chi tiết |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/send-otp` | `{ transaction_id, email, amount }` | 1. Vô hiệu hóa OTP cũ của GD này (nếu có).<br>2. Sinh ngẫu nhiên mã OTP 6 chữ số (kiểm tra không trùng với OTP đang còn hạn trong bảng `otps`).<br>3. Đặt thời hạn hết hạn đúng **5 phút** (`NOW() + INTERVAL 5 MINUTE`).<br>4. Lưu vào bảng `otps` (status `'PENDING'`).<br>5. Gửi email chứa OTP qua Nodemailer SMTP (hoặc in ra Terminal Simulator để test). |
+| `POST` | `/verify-otp` | `{ transaction_id, otp_code }` | 1. Tìm OTP status `'PENDING'` của `transaction_id`.<br>2. Kiểm tra nếu quá 5 phút $\rightarrow$ đổi status `'EXPIRED'`, trả lỗi 400 `OTP_EXPIRED`.<br>3. So khớp mã số. Nếu sai $\rightarrow$ trả lỗi 400 `OTP_MISMATCH`.<br>4. Nếu đúng $\rightarrow$ đổi status thành **`'VERIFIED'`** (mỗi OTP chỉ dùng 1 lần), trả về 200 OK. |
+| `POST` | `/send-receipt` | `{ email, transaction_id, full_name, student_id, student_name, amount }` | Gửi email biên lai giao dịch thành công cho khách hàng qua giao thức SMTP. |
+
+---
+
+### 🔹 Dịch vụ 2: `payment-service` (Cổng 8003) — 🔥 TRÁI TIM ĐIỀU PHỐI (ORCHESTRATOR)
+**Nhiệm vụ**: Điều phối toàn bộ quy trình, quản lý máy trạng thái FSM và xử lý tranh chấp đồng thời.
+
+#### 1. API Khởi tạo giao dịch (`POST /api/payment/initiate` hoặc `POST /initiate`)
+* **Body nhận vào**: `{ user_id, fee_id, student_id, amount }`
+* **Quy trình thực hiện**:
+  1. Kiểm tra số dư sơ bộ của `user_id`: Nếu số dư $< \text{amount} \rightarrow$ Báo lỗi ngay, không gửi OTP.
+  2. Kiểm tra học phí: Nếu `status === 'Đã thanh toán'` $\rightarrow$ Báo lỗi.
+  3. Sinh mã giao dịch độc nhất `TXN-[timestamp]-[random]`.
+  4. Lưu vào bảng `transactions` với trạng thái FSM: **`PENDING_OTP`**.
+  5. Gọi sang Notification Service: `POST http://localhost:8004/send-otp` với `{ transaction_id, email, amount }`.
+  6. Trả về cho Frontend: `{ success: true, transaction_id, amount, email }`.
+
+#### 2. API Xác thực & Thanh toán toàn diện (`POST /api/payment/verify-and-pay`) — 🔥 TRỌNG TÂM ĐỀ BÀI
+* **Body nhận vào**: `{ transaction_id, otp_code }`
+* **Quy trình 5 bước cốt lõi**:
+  1. **Chuyển FSM sang `PROCESSING`**: Cập nhật `transactions` thành `'PROCESSING'`.
+  2. **Xác thực OTP**: Gọi `POST http://localhost:8004/verify-otp`. Nếu OTP sai hoặc hết hạn $\rightarrow$ Cập nhật giao dịch thành `'FAILED'`, trả về lỗi.
+  3. **Bước A - Gạch nợ học phí (Chống Double Payment)**:
+     - Gọi `POST http://localhost:8002/internal/mark-paid` với `{ fee_id, transaction_id }`.
+     - Nếu nhận lỗi 409 $\rightarrow$ Cập nhật `transactions` thành `'FAILED'` với lý do *"Học phí đã được người khác thanh toán trước đó"*, trả lỗi 409 cho client.
+  4. **Bước B - Trừ tiền ví (Chống Double Spending)**:
+     - Gọi `POST http://localhost:8001/internal/deduct` với `{ user_id, amount, transaction_id }`.
+     - ⚠️ **NẾU TRỪ TIỀN THẤT BẠI (Bù hoàn Saga / Compensation)**:
+       - Lập tức gọi: `POST http://localhost:8002/internal/revert-paid` để hoàn tác học phí về lại `'Chưa thanh toán'`.
+       - Cập nhật `transactions` thành `'FAILED'` với lý do *"Số dư không đủ"*.
+  5. **Bước C - Hoàn tất thành công**:
+     - Cập nhật `transactions`: `status = 'COMPLETED'`, `completed_at = NOW()`.
+     - Gọi async `POST http://localhost:8004/send-receipt` để gửi email hóa đơn.
+     - Trả về thông tin biên lai thành công cho Frontend hiển thị Modal Receipt.
+
+#### 3. Các API phụ trợ:
+* `POST /api/payment/cancel`: Nhận `{ transaction_id }`, chuyển FSM sang **`CANCELLED`** và hủy mã OTP.
+* `GET /api/payment/history/:user_id`: Truy vấn bảng `transactions` JOIN với `students` và `tuition_fees` để lấy lịch sử nộp tiền.
+
+---
+
+## 🗄️ 4. CƠ SỞ DỮ LIỆU MYSQL (DOCKER)
+
+* **Tên Container**: `ibanking_mysql`
+* **Cổng**: `3306`
+* **Tài khoản**: `user: root` | `password: password` | `database: ibanking_db`
+* **Lệnh khởi động MySQL**:
+  ```powershell
+  docker start ibanking_mysql
+  ```
+* **Các bảng dữ liệu đã có sẵn**:
+  - `users`: Tài khoản iBanking (`ACC001` - `nguyenvana`, pass: `password123`).
+  - `students`: Sinh viên TDTU (`524H0024` - Nguyễn Phong Phú, `524H0129` - Phùng Mau Tiến).
+  - `tuition_fees`: Các khoản nợ học phí (`FEE-2024-HK1-0092`, `FEE-2024-LAB-0012`...).
+  - `transactions`: Sổ cái giao dịch FSM (`PENDING_OTP` $\rightarrow$ `PROCESSING` $\rightarrow$ `COMPLETED` / `FAILED` / `CANCELLED`).
+  - `otps`: Bảng lưu mã OTP 6 số (hạn 5 phút, status: `'PENDING'`, `'VERIFIED'`, `'EXPIRED'`).
+
+---
+
+## 🧪 5. HƯỚNG DẪN KIỂM THỬ (TESTING)
+
+* **Chạy kịch bản kiểm thử tự động Backend**:
+  ```powershell
+  node Backend/test-all.js
+  ```
+* **Chạy Frontend giao diện**:
+  ```powershell
+  cd Frontend
+  npm run dev
+  ```
+  Truy cập `http://localhost:5173`, đăng nhập với tài khoản: `nguyenvana` / `password123`.
