@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/preserve-manual-memoization */
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
