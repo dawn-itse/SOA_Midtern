@@ -12,7 +12,8 @@ export const pool = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 20,
   queueLimit: 0,
-  decimalNumbers: true
+  decimalNumbers: true,
+  charset: 'utf8mb4'
 });
 // Hàm kiểm tra kết nối CSDL lúc khởi động server
 

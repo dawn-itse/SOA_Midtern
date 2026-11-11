@@ -2,18 +2,19 @@ import { useState, useEffect, useRef } from 'react';
 import { formatVND } from '../lib/data';
 import { Card } from './ui/card';
 
-const OtpModal = ({ isOpen, onClose, email, feeTitle, amount, activeOtp, onVerifySuccess, onResendOtp }) => {
+const OtpModal = ({ isOpen, onClose, email, feeTitle, amount, onVerify, onResendOtp }) => {
     const [otpValues, setOtpValues] = useState(['', '', '', '', '', '']);
-    const [timer, setTimer] = useState(60);
-    const [errorMsg, setErrorMsg] = useState(false);
+    const [timer, setTimer] = useState(300);
+    const [errorMsg, setErrorMsg] = useState('');
+    const [isSubmitting, setIsSubmitting] = useState(false);
     const inputRefs = useRef([]);
 
     useEffect(() => {
         let interval = null;
         if (isOpen) {
-            setTimer(60);
+            setTimer(300); // OTP có hiệu lực 5 phút
             setOtpValues(['', '', '', '', '', '']);
-            setErrorMsg(false);
+            setErrorMsg('');
             if (inputRefs.current[0]) inputRefs.current[0].focus();
             
             interval = setInterval(() => {
@@ -23,20 +24,7 @@ const OtpModal = ({ isOpen, onClose, email, feeTitle, amount, activeOtp, onVerif
             setTimer(0);
         }
         return () => clearInterval(interval);
-    }, [isOpen, activeOtp]);
-
-    // Handle toast click to copy - we can listen for a custom event
-    useEffect(() => {
-        const handleAutoFill = (e) => {
-            if (e.detail && e.detail.otp) {
-                const chars = e.detail.otp.split('');
-                setOtpValues(chars);
-                setErrorMsg(false);
-            }
-        };
-        window.addEventListener('autofill-otp', handleAutoFill);
-        return () => window.removeEventListener('autofill-otp', handleAutoFill);
-    }, []);
+    }, [isOpen]);
 
     if (!isOpen) return null;
 
@@ -45,7 +33,7 @@ const OtpModal = ({ isOpen, onClose, email, feeTitle, amount, activeOtp, onVerif
         const newValues = [...otpValues];
         newValues[idx] = value;
         setOtpValues(newValues);
-        setErrorMsg(false);
+        setErrorMsg('');
 
         if (value && idx < 5) {
             inputRefs.current[idx + 1].focus();
@@ -67,18 +55,16 @@ const OtpModal = ({ isOpen, onClose, email, feeTitle, amount, activeOtp, onVerif
         const pasteData = e.clipboardData.getData('text').trim();
         if (/^\d{6}$/.test(pasteData)) {
             setOtpValues(pasteData.split(''));
-            setErrorMsg(false);
+            setErrorMsg('');
             inputRefs.current[5].focus();
         }
     };
 
-    const handleVerify = () => {
-        const entered = otpValues.join('');
-        if (entered === activeOtp) {
-            onVerifySuccess();
-        } else {
-            setErrorMsg(true);
-        }
+    const handleVerify = async () => {
+        setIsSubmitting(true);
+        const result = await onVerify(otpValues.join(''));
+        setIsSubmitting(false);
+        if (!result.ok && !result.closed) setErrorMsg(result.message || 'Mã OTP không chính xác. Vui lòng kiểm tra lại.');
     };
 
     const isComplete = otpValues.join('').length === 6;
@@ -132,9 +118,9 @@ const OtpModal = ({ isOpen, onClose, email, feeTitle, amount, activeOtp, onVerif
                     <div className="flex items-center justify-between text-[13px] text-slate-400 mb-5">
                         <span>Mã có hiệu lực trong: <strong className="text-brand-gold">{timer > 0 ? formatTime(timer) : '00:00 (Hết hạn)'}</strong></span>
                         <button 
-                            disabled={timer > 0} 
-                            onClick={onResendOtp}
-                            className={`font-semibold ${timer > 0 ? 'text-slate-500 cursor-not-allowed' : 'text-brand-primary cursor-pointer hover:underline'}`}
+                            disabled={timer > 240} 
+                            onClick={async () => { await onResendOtp(); setTimer(300); setOtpValues(['', '', '', '', '', '']); setErrorMsg(''); }}
+                            className={`font-semibold ${timer > 240 ? 'text-slate-500 cursor-not-allowed' : 'text-brand-primary cursor-pointer hover:underline'}`}
                         >
                             <i className="fa-solid fa-rotate-right"></i> Gửi lại mã OTP
                         </button>
@@ -153,14 +139,14 @@ const OtpModal = ({ isOpen, onClose, email, feeTitle, amount, activeOtp, onVerif
 
                     {errorMsg && (
                         <div className="mt-3.5 bg-red-500/15 border border-red-500/30 text-red-400 rounded-lg p-2.5 text-[13px] text-center">
-                            <i className="fa-solid fa-circle-exclamation"></i> Mã OTP không chính xác. Vui lòng kiểm tra lại.
+                            <i className="fa-solid fa-circle-exclamation"></i> {errorMsg}
                         </div>
                     )}
                 </div>
 
                 <div className="px-6 py-4 border-borderGlass flex justify-end gap-3 ">
                     <button onClick={onClose} className="bg-red-500 rounded-2xl text-white shadow-2xs hover:cursor-pointer py-2.5 px-5">Hủy giao dịch</button>
-                    <button onClick={handleVerify} disabled={!isComplete} className="bg-gradient-to-br from-green-500 to-emerald-600 rounded-2xl shadow-green-500/30 hover:shadow-green-500/40 hover:cursor-pointer py-2.5 px-5 text-white">
+                    <button onClick={handleVerify} disabled={!isComplete || isSubmitting} className="bg-gradient-to-br from-green-500 to-emerald-600 rounded-2xl shadow-green-500/30 hover:shadow-green-500/40 hover:cursor-pointer py-2.5 px-5 text-white">
                         <i className="fa-solid fa-shield-check"></i> Xác nhận Thanh toán
                     </button>
                 </div>

@@ -1,9 +1,9 @@
-import { User2, LogOut } from 'lucide-react';
+import { User2, LogOut, History } from 'lucide-react';
 import { Link, useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import { formatVND } from '../lib/data';
 
-const Header = ({user}) => {
+const Header = ({ user, onOpenHistory }) => {
 const navigate = useNavigate();
 
 const handleLogout = () => {
@@ -22,12 +22,22 @@ const handleLogout = () => {
           </Link>
         </div>
 
-        <div className="flex gap-4 items-center">
+        <div className="flex gap-3 sm:gap-4 items-center">
           <div>
             <span className="bg-white/95 px-3.5 py-1.5 rounded-2xl text-xs sm:text-sm font-semibold text-blue-700 shadow-xs">
               Số dư: {formatVND(user.balance)}
             </span>
           </div>
+
+          <button
+            type="button"
+            onClick={onOpenHistory}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-white text-xs sm:text-sm font-semibold transition cursor-pointer border border-white/25"
+            title="Xem lịch sử giao dịch"
+          >
+            <History className="size-4" />
+            <span>Lịch sử GD</span>
+          </button>
 
           <div className="flex items-center gap-3">
             <div className="hidden sm:flex items-center gap-1.5 text-white/95 text-sm font-medium bg-blue-700/60 px-3 py-1.5 rounded-xl border border-blue-400/30">

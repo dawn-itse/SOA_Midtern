@@ -3,7 +3,7 @@ import { formatVND } from '../lib/data';
 import { Checkbox } from './ui/checkbox';
 import { Card } from './ui/card';
 
-const PaymentTab = ({ isOpen, onClose, currentAccount, currentStudent, feeRecord, onConfirmTransaction, setDemoBalance }) => {
+const PaymentTab = ({ isOpen, onClose, currentAccount, currentStudent, feeRecord, onConfirmTransaction}) => {
     const [termsAccepted, setTermsAccepted] = useState(false);
 
     if (!isOpen || !feeRecord) return null;

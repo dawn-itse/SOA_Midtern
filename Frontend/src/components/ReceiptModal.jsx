@@ -1,15 +1,20 @@
 import { formatVND } from '../lib/data';
 
-const ReceiptModal = ({ isOpen, onClose, currentAccount, currentStudent, feeRecord }) => {
-    if (!isOpen || !feeRecord || !currentStudent) return null;
+const ReceiptModal = ({ isOpen, onClose, currentAccount, currentStudent, feeRecord, receipt }) => {
+    if (!isOpen || (!feeRecord && !receipt)) return null;
 
     const handlePrint = () => {
         window.print();
     };
 
-    const txnId = 'TXN-' + Math.floor(1000000000 + Math.random() * 9000000000);
-    const now = new Date();
+    const txnId = receipt?.transactionId || ('TXN-' + Math.floor(1000000000 + Math.random() * 9000000000));
+    const now = receipt?.completedAt ? new Date(receipt.completedAt) : new Date();
     const timeStr = now.toLocaleDateString('vi-VN') + ' ' + now.toLocaleTimeString('vi-VN');
+    const amountPaid = receipt?.amount ?? feeRecord?.price ?? 0;
+    const studentName = receipt?.studentName || currentStudent?.studentName || '—';
+    const studentId = receipt?.studentId || currentStudent?.mssv || '—';
+    const feeId = receipt?.feeId || feeRecord?.feeId || '—';
+    const typeOfFee = receipt?.typeOfFee || feeRecord?.typeOfFee || '—';
 
     return (
         <div className={`modal-overlay ${isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
@@ -31,7 +36,7 @@ const ReceiptModal = ({ isOpen, onClose, currentAccount, currentStudent, feeReco
                 <div className="px-8 pb-6 relative z-20">
                     <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 text-center mb-5">
                         <span className="text-[12px] text-slate-500 uppercase tracking-wide font-semibold block mb-1">Tổng tiền đã thanh toán</span>
-                        <h1 className="font-heading text-[28px] font-extrabold text-emerald-600">{formatVND(feeRecord.price)}</h1>
+                        <h1 className="font-heading text-[28px] font-extrabold text-emerald-600">{formatVND(amountPaid)}</h1>
                     </div>
 
                     <div className="flex flex-col gap-2.5 text-[13px]">
@@ -56,19 +61,19 @@ const ReceiptModal = ({ isOpen, onClose, currentAccount, currentStudent, feeReco
                         
                         <div className="flex justify-between">
                             <span className="text-slate-500">Họ & Tên Sinh viên:</span>
-                            <strong className="text-slate-700">{currentStudent.studentName}</strong>
+                            <strong className="text-slate-700">{studentName}</strong>
                         </div>
                         <div className="flex justify-between">
                             <span className="text-slate-500">Mã số Sinh viên:</span>
-                            <strong className="text-slate-700">{currentStudent.mssv}</strong>
+                            <strong className="text-slate-700">{studentId}</strong>
                         </div>
                         <div className="flex justify-between">
                             <span className="text-slate-500">Mã khoản phí (FeeID):</span>
-                            <strong className="text-slate-700">{feeRecord.feeId}</strong>
+                            <strong className="text-slate-700">{feeId}</strong>
                         </div>
                         <div className="flex justify-between">
                             <span className="text-slate-500">Loại học phí:</span>
-                            <strong className="text-slate-700">{feeRecord.typeOfFee}</strong>
+                            <strong className="text-slate-700">{typeOfFee}</strong>
                         </div>
                         <div className="flex justify-between mt-1">
                             <span className="text-slate-500">Số dư còn lại:</span>
