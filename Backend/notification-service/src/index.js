@@ -3,8 +3,10 @@ import express from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
+import { tracing } from './tracing.js';
 import { pool, testConnection } from './db.js';
-import { sendMail, isSmtpConfigured, logMailerMode } from './mailer.js';
+import { requireInternalSecret } from './security.js';
+import { sendMail, isSmtpConfigured, getMailMode, getMailOverride, logMailerMode } from './mailer.js';
 
 dotenv.config();
 
@@ -13,6 +15,7 @@ const PORT = process.env.PORT || 8004;
 const OTP_TTL_SECONDS = 300; // OTP có hạn đúng 5 phút
 
 app.use(cors());
+app.use(tracing('notification-service'));
 app.use(express.json());
 
 app.use((req, res, next) => {
@@ -38,6 +41,12 @@ async function generateUniqueOtp(connection) {
   throw new Error('Không thể sinh OTP không trùng sau 10 lần thử');
 }
 
+// Toàn bộ API của notification-service là nội bộ: chỉ payment-service gọi, kèm x-internal-secret.
+// /health giữ công khai (khai báo sau, không đi qua middleware này).
+for (const route of ['/send-otp', '/verify-otp', '/cancel-otp', '/send-receipt']) {
+  app.use(route, requireInternalSecret);
+}
+
 // 1. Sinh & gửi OTP
 app.post('/send-otp', async (req, res) => {
   const { transaction_id, email, amount } = req.body || {};
@@ -48,22 +57,17 @@ app.post('/send-otp', async (req, res) => {
 
   const connection = await pool.getConnection();
   let otpId, otpCode;
+  // Không còn khóa dòng transactions (bảng thuộc payment_db). Tuần tự hóa gửi/gửi lại OTP
+  // của cùng 1 giao dịch bằng named lock của MySQL, trên cùng connection.
+  const lockName = `otp:${transaction_id}`;
+  let locked = false;
   try {
+    const [[lk]] = await connection.query('SELECT GET_LOCK(?, 5) AS got', [lockName]);
+    if (Number(lk.got) !== 1) {
+      return res.status(503).json({ success: false, code: 'OTP_BUSY', message: 'Hệ thống đang xử lý OTP của giao dịch này, vui lòng thử lại' });
+    }
+    locked = true;
     await connection.beginTransaction();
-
-    // Khóa dòng giao dịch để các lần gửi/gửi lại OTP của cùng 1 giao dịch được xếp hàng tuần tự
-    const [txRows] = await connection.query(
-      'SELECT status FROM transactions WHERE transaction_id = ? FOR UPDATE',
-      [transaction_id]
-    );
-    if (txRows.length === 0) {
-      await connection.rollback();
-      return res.status(404).json({ success: false, code: 'TRANSACTION_NOT_FOUND', message: 'Không tìm thấy giao dịch' });
-    }
-    if (txRows[0].status !== 'PENDING_OTP') {
-      await connection.rollback();
-      return res.status(409).json({ success: false, code: 'INVALID_TRANSACTION_STATE', message: `Giao dịch đang ở trạng thái ${txRows[0].status}, không thể gửi OTP` });
-    }
 
     // Vô hiệu hóa OTP cũ còn PENDING của giao dịch này
     const [inv] = await connection.query(
@@ -86,6 +90,7 @@ app.post('/send-otp', async (req, res) => {
     console.error('[Notification Service] Lỗi tạo OTP:', err);
     return res.status(500).json({ success: false, code: 'INTERNAL_ERROR', message: 'Lỗi server khi tạo OTP' });
   } finally {
+    if (locked) await connection.query('SELECT RELEASE_LOCK(?)', [lockName]).catch(() => {});
     connection.release();
   }
 
@@ -163,6 +168,11 @@ app.post('/verify-otp', async (req, res) => {
       await connection.rollback();
       return res.status(400).json({ success: false, code: 'OTP_ALREADY_USED', message: 'OTP đã được sử dụng' });
     }
+    // OTP đã dùng xong: vô hiệu hóa mọi OTP PENDING còn lại của cùng giao dịch
+    await connection.query(
+      "UPDATE otps SET status = 'EXPIRED' WHERE transaction_id = ? AND status = 'PENDING'",
+      [transaction_id]
+    );
     await connection.commit();
     console.log(`[Notification Service] OTP của ${transaction_id} xác thực thành công -> VERIFIED`);
     return res.json({ success: true, message: 'Xác thực OTP thành công', data: { transaction_id } });
@@ -230,7 +240,7 @@ app.post('/send-receipt', async (req, res) => {
   }
 });
 
-app.get('/health', (req, res) => res.json({ success: true, service: 'notification-service', smtp: isSmtpConfigured() }));
+app.get('/health', (req, res) => res.json({ success: true, service: 'notification-service', smtp: isSmtpConfigured(), mailMode: getMailMode(), mailOverride: Boolean(getMailOverride()) }));
 
 // JSON lỗi thay vì HTML (vd: body JSON sai cú pháp)
 app.use((err, req, res, next) => {

@@ -5,6 +5,7 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
+    "test:mail": "node scripts/test-mail.js",
     "dev": "node --watch src/index.js"
   },
   "dependencies": {

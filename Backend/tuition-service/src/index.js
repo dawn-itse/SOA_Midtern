@@ -1,7 +1,9 @@
 // Nhiệm vụ: Tra cứu sv, nợ học phí và gạch nợ học phí có điều kiện
 import express from 'express';
 import cors from 'cors';
+import { tracing } from './tracing.js';
 import { pool, testConnection } from './db.js';
+import { requireAuth, requireInternalSecret } from './security.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -10,6 +12,7 @@ const app = express();
 const PORT = process.env.PORT || 8002;
 
 app.use(cors());
+app.use(tracing('tuition-service'));
 app.use(express.json());
 
 app.use((req, res, next) => {
@@ -17,8 +20,11 @@ app.use((req, res, next) => {
   next(); 
 });
 
-// 1. Tra cứu sinh viên theo MSSV
-app.get('/lookup/:student_id', async (req, res) => {
+// API nội bộ (service gọi service) phải có header x-internal-secret
+app.use('/internal', requireInternalSecret);
+
+// 1. Tra cứu sinh viên theo MSSV (yêu cầu JWT đăng nhập)
+app.get('/api/tuition/students/:student_id', requireAuth, async (req, res) => {
   try {
     const studentId = req.params.student_id;
     if (!studentId) {
@@ -128,6 +134,26 @@ app.post('/internal/revert-paid', async (req, res) => {
     return res.status(500).json({ success: false, message: 'Lỗi hoàn tác học phí' });
   }
 });
+
+// [MỚI - Đợt 1] Payment Service tra cứu 1 khoản học phí (thay cho truy vấn trực tiếp tuition_fees/students)
+app.get('/internal/fees/:fee_id', async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT f.fee_id, f.student_id, s.student_name, f.price, f.type_of_fee, f.status
+         FROM tuition_fees f JOIN students s ON s.student_id = f.student_id
+        WHERE f.fee_id = ?`, [req.params.fee_id]);
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, code: 'FEE_NOT_FOUND', message: 'Không tìm thấy học phí' });
+    }
+    const f = rows[0];
+    res.json({ success: true, data: { fee_id: f.fee_id, student_id: f.student_id, student_name: f.student_name, price: parseFloat(f.price), type_of_fee: f.type_of_fee, status: f.status } });
+  } catch (error) {
+    console.error('[Tuition Service] Lỗi tra cứu học phí:', error);
+    res.status(500).json({ success: false, message: 'Lỗi server' });
+  }
+});
+
+app.get('/health', (req, res) => res.json({ success: true, service: 'tuition-service' }));
 
 // 4. Khởi động server
 app.listen(PORT, async () => {

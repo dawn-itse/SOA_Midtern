@@ -1,0 +1,17 @@
+{
+  "name": "ibanking-backend-tests",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Test tự động + script nạp DB cho hệ thống iBanking (cần stack Docker đang chạy: docker compose up -d --build)",
+  "scripts": {
+    "test": "node test-all.js && node test-payment.js && node test-e2e.js",
+    "test:auth-tuition": "node test-all.js",
+    "test:payment": "node test-payment.js",
+    "init-db": "node init-db.js",
+    "test:e2e": "node test-e2e.js"
+  },
+  "devDependencies": {
+    "mysql2": "^3.9.7"
+  }
+}

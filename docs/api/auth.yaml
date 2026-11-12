@@ -1,0 +1,214 @@
+openapi: 3.0.3
+info:
+  title: Auth Service API
+  version: 2.0.0
+  description: |
+    Đăng nhập (JWT), thông tin tài khoản và trừ tiền an toàn (chống double spending bằng `SELECT ... FOR UPDATE`).
+    Nhóm `Internal` chỉ dành cho service gọi service (payment-service), bắt buộc header `x-internal-secret`.
+servers:
+  - url: http://localhost:8000
+    description: API Gateway (khuyến nghị)
+  - url: http://localhost:8001
+    description: Gọi thẳng service (chỉ để debug)
+tags:
+  - name: Public
+    description: API cho frontend
+  - name: Internal
+    description: API nội bộ (service gọi service)
+paths:
+  /api/auth/login:
+    post:
+      tags: [Public]
+      summary: Đăng nhập, nhận JWT (hạn 2 giờ)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+            example: { username: nguyenvana, password: password123 }
+      responses:
+        '200':
+          description: Đăng nhập thành công
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '400':
+          description: Thiếu username hoặc password
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { success: false, message: Vui lòng nhập đầy đủ username và password }
+        '401':
+          description: Sai username hoặc password
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { success: false, message: Sai username hoặc password }
+        '500': { $ref: '#/components/responses/ServerError' }
+  /api/auth/profile:
+    get:
+      tags: [Public]
+      summary: Thông tin tài khoản và số dư mới nhất của người dùng trong token
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: Người dùng trong token không còn tồn tại
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/ServerError' }
+  /internal/users/{user_id}:
+    get:
+      tags: [Internal]
+      summary: Payment tra cứu user (họ tên, email, số dư)
+      security: [{ internalSecret: [] }]
+      parameters:
+        - { name: user_id, in: path, required: true, schema: { type: string }, example: ACC001 }
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    properties:
+                      user_id: { type: string, example: ACC001 }
+                      full_name: { type: string, example: Nguyễn Văn A }
+                      email: { type: string, example: nguyenvana.banking@gmail.com }
+                      balance: { type: number, example: 15000000 }
+        '401': { $ref: '#/components/responses/InvalidInternalSecret' }
+        '404':
+          description: "`USER_NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { success: false, code: USER_NOT_FOUND, message: Người dùng không tồn tại }
+  /internal/deduct:
+    post:
+      tags: [Internal]
+      summary: Trừ tiền (khóa dòng `FOR UPDATE`, chống double spending)
+      security: [{ internalSecret: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, amount, transaction_id]
+              properties:
+                user_id: { type: string, example: ACC001 }
+                amount: { type: number, example: 12200000 }
+                transaction_id: { type: string, example: TXN-1731390000000-AB12CD34 }
+      responses:
+        '200':
+          description: Trừ tiền thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  message: { type: string, example: Trừ tiền thành công }
+                  data:
+                    type: object
+                    properties:
+                      new_balance: { type: number, example: 2800000 }
+        '400':
+          description: Thiếu tham số, hoặc `Số dư không đủ` (payment dựa vào mã 400 để chạy Saga bù hoàn)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { success: false, message: Số dư không đủ }
+        '401': { $ref: '#/components/responses/InvalidInternalSecret' }
+        '404':
+          description: Người dùng không tồn tại
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/ServerError' }
+  /health:
+    get:
+      summary: Healthcheck (công khai)
+      responses:
+        '200':
+          description: Service đang chạy
+          content:
+            application/json:
+              example: { success: true, service: auth-service }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT lấy từ `POST /api/auth/login`
+    internalSecret:
+      type: apiKey
+      in: header
+      name: x-internal-secret
+      description: Bí mật dùng chung giữa các service (`INTERNAL_API_SECRET`). Mặc định đồ án `soa_internal_secret`.
+  responses:
+    Unauthorized:
+      description: "Thiếu/sai/hết hạn token. Mã lỗi `UNAUTHORIZED`"
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { success: false, code: UNAUTHORIZED, message: Token không hợp lệ hoặc đã hết hạn }
+    InvalidInternalSecret:
+      description: "Thiếu/sai header `x-internal-secret`. Mã lỗi `INVALID_INTERNAL_SECRET`"
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { success: false, code: INVALID_INTERNAL_SECRET, message: Thiếu hoặc sai x-internal-secret }
+    ServerError:
+      description: Lỗi server
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { success: false, message: Lỗi server }
+  schemas:
+    Error:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        code: { type: string }
+        message: { type: string }
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string, format: password }
+    User:
+      type: object
+      properties:
+        id: { type: string, example: ACC001 }
+        username: { type: string, example: nguyenvana }
+        full_name: { type: string, example: Nguyễn Văn A }
+        phone_number: { type: string, example: 0912 345 678 }
+        email: { type: string, example: nguyenvana.banking@gmail.com }
+        balance: { type: number, example: 15000000 }
+    LoginResponse:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        message: { type: string, example: Đăng nhập thành công }
+        data:
+          type: object
+          properties:
+            token: { type: string }
+            user: { $ref: '#/components/schemas/User' }
