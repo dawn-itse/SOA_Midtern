@@ -1,0 +1,175 @@
+# TDTU iBanking - 1 MySQL server, 4 database riêng (database-per-service) + Mailpit + frontend
+# Chạy:  docker compose up -d --build        Dừng: docker compose down  (thêm -v để xóa dữ liệu)
+name: ibanking
+
+x-db-env: &healthy
+  condition: service_healthy
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: ibanking_mysql
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # Chỉ chạy lần đầu (khi volume còn trống). Muốn nạp lại: docker compose down -v
+      - ./Backend/db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -ppassword --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  mailpit:
+    image: axllent/mailpit
+    container_name: ibanking_mailpit
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+
+  auth-service:
+    build: ./Backend/auth-service
+    container_name: ibanking_auth
+    environment:
+      PORT: 8001
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: auth_user
+      DB_PASSWORD: auth_pass
+      DB_NAME: auth_db
+      JWT_SECRET: ${JWT_SECRET:-soa_midterm_secret}
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-soa_internal_secret}
+    ports:
+      - "8001:8001"
+    depends_on:
+      mysql: *healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8001/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  tuition-service:
+    build: ./Backend/tuition-service
+    container_name: ibanking_tuition
+    environment:
+      PORT: 8002
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: tuition_user
+      DB_PASSWORD: tuition_pass
+      DB_NAME: tuition_db
+      JWT_SECRET: ${JWT_SECRET:-soa_midterm_secret}
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-soa_internal_secret}
+    ports:
+      - "8002:8002"
+    depends_on:
+      mysql: *healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8002/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  notification-service:
+    build: ./Backend/notification-service
+    container_name: ibanking_notification
+    environment:
+      PORT: 8004
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: notification_user
+      DB_PASSWORD: notification_pass
+      DB_NAME: notification_db
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      MAIL_TO_OVERRIDE: ${MAIL_TO_OVERRIDE:-}
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-soa_internal_secret}
+    ports:
+      - "8004:8004"
+    depends_on:
+      mysql: *healthy
+      mailpit:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8004/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  payment-service:
+    build: ./Backend/payment-service
+    container_name: ibanking_payment
+    environment:
+      PORT: 8003
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: payment_user
+      DB_PASSWORD: payment_pass
+      DB_NAME: payment_db
+      AUTH_SERVICE_URL: http://auth-service:8001
+      TUITION_SERVICE_URL: http://tuition-service:8002
+      NOTIFICATION_SERVICE_URL: http://notification-service:8004
+      JWT_SECRET: ${JWT_SECRET:-soa_midterm_secret}
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:-soa_internal_secret}
+    ports:
+      - "8003:8003"
+    depends_on:
+      mysql: *healthy
+      auth-service: *healthy
+      tuition-service: *healthy
+      notification-service: *healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8003/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # API Gateway: điểm vào duy nhất của frontend (http://localhost:8000). Cổng 8001-8004 vẫn được publish để test/Swagger.
+  api-gateway:
+    image: nginx:alpine
+    container_name: ibanking_gateway
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      auth-service: *healthy
+      tuition-service: *healthy
+      payment-service: *healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Tài liệu API (OpenAPI 3) cho cả 4 service: http://localhost:8080
+  swagger-ui:
+    image: swaggerapi/swagger-ui
+    container_name: ibanking_swagger
+    environment:
+      URLS: '[{"url":"/api/auth.yaml","name":"Auth Service (8001)"},{"url":"/api/tuition.yaml","name":"Tuition Service (8002)"},{"url":"/api/payment.yaml","name":"Payment Service (8003)"},{"url":"/api/notification.yaml","name":"Notification Service (8004, nội bộ)"}]'
+      URLS_PRIMARY_NAME: "Payment Service (8003)"
+    volumes:
+      - ./docs/api:/usr/share/nginx/html/api:ro
+    ports:
+      - "8080:8080"
+
+  frontend:
+    build: ./Frontend
+    container_name: ibanking_frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      api-gateway: *healthy
+
+volumes:
+  mysql_data:

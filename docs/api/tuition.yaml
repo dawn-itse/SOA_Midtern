@@ -1,0 +1,201 @@
+openapi: 3.0.3
+info:
+  title: Tuition Service API
+  version: 2.0.0
+  description: |
+    Tra cứu sinh viên và học phí, gạch nợ học phí có điều kiện (chống double payment:
+    `FOR UPDATE` + `UPDATE ... WHERE status = 'Chưa thanh toán'`).
+    Nhóm `Internal` chỉ dành cho payment-service, bắt buộc header `x-internal-secret`.
+servers:
+  - url: http://localhost:8000
+    description: API Gateway (khuyến nghị)
+  - url: http://localhost:8002
+    description: Gọi thẳng service (chỉ để debug)
+tags:
+  - name: Public
+  - name: Internal
+paths:
+  /api/tuition/students/{student_id}:
+    get:
+      tags: [Public]
+      summary: Tra cứu sinh viên và danh sách học phí theo MSSV
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: student_id, in: path, required: true, schema: { type: string }, example: 524H0024, description: MSSV (không phân biệt hoa thường) }
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  message: { type: string, example: Lấy thông tin sinh viên thành công }
+                  data:
+                    type: object
+                    properties:
+                      student: { $ref: '#/components/schemas/Student' }
+        '401':
+          description: "Thiếu/sai/hết hạn token (`UNAUTHORIZED`)"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { success: false, code: UNAUTHORIZED, message: "Thiếu hoặc sai token đăng nhập, hoặc token đã hết hạn" }
+        '404':
+          description: Không tìm thấy sinh viên
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { success: false, message: Không tìm thấy sinh viên }
+        '500': { $ref: '#/components/responses/ServerError' }
+  /internal/fees/{fee_id}:
+    get:
+      tags: [Internal]
+      summary: Payment tra cứu một khoản học phí
+      security: [{ internalSecret: [] }]
+      parameters:
+        - { name: fee_id, in: path, required: true, schema: { type: string }, example: FEE-2024-HK1-0092 }
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    properties:
+                      fee_id: { type: string }
+                      student_id: { type: string, example: 524H0024 }
+                      student_name: { type: string, example: Nguyễn Phong Phú }
+                      price: { type: number, example: 12200000 }
+                      type_of_fee: { type: string }
+                      status: { type: string, enum: [Chưa thanh toán, Đã thanh toán] }
+        '401': { $ref: '#/components/responses/InvalidInternalSecret' }
+        '404':
+          description: "`FEE_NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { success: false, code: FEE_NOT_FOUND, message: Không tìm thấy học phí }
+  /internal/mark-paid:
+    post:
+      tags: [Internal]
+      summary: Gạch nợ học phí (chống double payment)
+      security: [{ internalSecret: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FeeTxnRequest' }
+      responses:
+        '200':
+          description: Gạch nợ thành công
+          content:
+            application/json:
+              example: { success: true, message: Gạch nợ học phí thành công, data: { fee_id: FEE-2024-HK1-0092, status: Đã thanh toán } }
+        '400':
+          description: Thiếu `fee_id` hoặc `transaction_id`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/InvalidInternalSecret' }
+        '404':
+          description: Không tìm thấy học phí
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: "`ALREADY_PAID` (đã thanh toán trước đó) hoặc `CONCURRENCY_CONFLICT` (vừa bị người khác thanh toán)"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { success: false, code: ALREADY_PAID, message: Học phí này đã được thanh toán trước đó }
+        '500': { $ref: '#/components/responses/ServerError' }
+  /internal/revert-paid:
+    post:
+      tags: [Internal]
+      summary: Hoàn tác gạch nợ (Saga bù hoàn)
+      security: [{ internalSecret: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FeeTxnRequest' }
+      responses:
+        '200':
+          description: Đã hoàn tác
+          content:
+            application/json:
+              example: { success: true, message: Đã hoàn tác trạng thái học phí }
+        '401': { $ref: '#/components/responses/InvalidInternalSecret' }
+        '500': { $ref: '#/components/responses/ServerError' }
+  /health:
+    get:
+      summary: Healthcheck (công khai)
+      responses:
+        '200':
+          description: Service đang chạy
+          content:
+            application/json:
+              example: { success: true, service: tuition-service }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT lấy từ `POST /api/auth/login` (auth-service, cổng 8001)
+    internalSecret:
+      type: apiKey
+      in: header
+      name: x-internal-secret
+      description: Bí mật dùng chung giữa các service (`INTERNAL_API_SECRET`). Mặc định đồ án `soa_internal_secret`.
+  responses:
+    InvalidInternalSecret:
+      description: "Thiếu/sai header `x-internal-secret`. Mã lỗi `INVALID_INTERNAL_SECRET`"
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { success: false, code: INVALID_INTERNAL_SECRET, message: Thiếu hoặc sai x-internal-secret }
+    ServerError:
+      description: Lỗi server
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { success: false, message: Lỗi server }
+  schemas:
+    Error:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        code: { type: string }
+        message: { type: string }
+    FeeTxnRequest:
+      type: object
+      required: [fee_id, transaction_id]
+      properties:
+        fee_id: { type: string, example: FEE-2024-HK1-0092 }
+        transaction_id: { type: string, example: TXN-1731390000000-AB12CD34 }
+    Student:
+      type: object
+      properties:
+        mssv: { type: string, example: 524H0024 }
+        studentName: { type: string, example: Nguyễn Phong Phú }
+        faculty: { type: string }
+        className: { type: string, example: 24H50201 }
+        fees:
+          type: array
+          items:
+            type: object
+            properties:
+              feeId: { type: string }
+              price: { type: number, example: 12200000 }
+              typeOfFee: { type: string }
+              status: { type: string, enum: [Chưa thanh toán, Đã thanh toán] }
+              description: { type: string, nullable: true }
+              createdAt: { type: string, format: date-time }
+              expiredAt: { type: string, format: date-time, nullable: true }

@@ -6,7 +6,9 @@ import express from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
+import { tracing, currentRequestId } from './tracing.js';
 import { pool, testConnection } from './db.js';
+import { requireAuth } from './security.js';
 
 dotenv.config();
 
@@ -25,13 +27,10 @@ const STATUS_PAID = 'Đã thanh toán';
 const REASON_ALREADY_PAID = 'Học phí đã được người khác thanh toán trước đó';
 
 app.use(cors());
+app.use(tracing('payment-service'));
 app.use(express.json());
-app.use((req, res, next) => {
-  console.log(`[Payment Service] [${new Date().toLocaleTimeString('vi-VN')}] ${req.method} ${req.originalUrl}`);
-  next();
-});
 
-const log = (txn, msg) => console.log(`[Payment Service] [${txn}] ${msg}`);
+const log = (txn, msg) => console.log(`[Payment Service] [req=${currentRequestId() || '-'}] [${txn}] ${msg}`);
 const isNonEmptyString = (v) => typeof v === 'string' && v.trim().length > 0;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -39,14 +38,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * Gọi microservice khác. KHÔNG BAO GIỜ ném lỗi — luôn trả về
  * { ok, status, data, networkError } để orchestrator tự quyết định xử lý.
  */
-async function callService(name, baseUrl, path, body) {
+async function callService(name, baseUrl, path, body, method = 'POST') {
   try {
-    const r = await fetch(`${baseUrl}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(SERVICE_TIMEOUT_MS)
-    });
+    const init = { method, headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_API_SECRET || '', ...(currentRequestId() ? { 'x-request-id': currentRequestId() } : {}) }, signal: AbortSignal.timeout(SERVICE_TIMEOUT_MS) };
+    if (method !== 'GET') init.body = JSON.stringify(body); // GET không có body
+    const r = await fetch(`${baseUrl}${path}`, init);
     let data = null;
     try { data = await r.json(); } catch { /* body không phải JSON */ }
     if (!r.ok) console.error(`[Payment Service] ${name} ${path} -> HTTP ${r.status}`, data);
@@ -83,32 +79,62 @@ function newTransactionId() {
 // 1. KHỞI TẠO GIAO DỊCH
 // ---------------------------------------------------------------------------
 async function initiateHandler(req, res) {
-  const { user_id, fee_id, student_id, amount } = req.body || {};
+  const { fee_id, student_id, amount } = req.body || {};
+  const user_id = req.user.id; // lấy từ JWT, KHÔNG tin body
+  if (req.body?.user_id !== undefined && req.body.user_id !== user_id) {
+    return res.status(403).json({ success: false, code: 'FORBIDDEN', message: 'Không được thanh toán thay người dùng khác' });
+  }
   const amt = Number(amount);
-  if (!isNonEmptyString(user_id) || !isNonEmptyString(fee_id) || !isNonEmptyString(student_id)) {
-    return res.status(400).json({ success: false, code: 'INVALID_REQUEST', message: 'Thiếu user_id / fee_id / student_id' });
+  if (!isNonEmptyString(fee_id) || !isNonEmptyString(student_id)) {
+    return res.status(400).json({ success: false, code: 'INVALID_REQUEST', message: 'Thiếu fee_id / student_id' });
   }
   if (!Number.isFinite(amt) || amt <= 0) {
     return res.status(400).json({ success: false, code: 'INVALID_AMOUNT', message: 'Số tiền phải là số dương' });
   }
 
+  // Idempotency-Key (tùy chọn): client retry khi timeout/mất mạng mà không sợ tạo giao dịch trùng
+  const idemKey = req.headers['idempotency-key'];
+  if (idemKey !== undefined && !(typeof idemKey === 'string' && /^[\w.-]{8,64}$/.test(idemKey))) {
+    return res.status(400).json({ success: false, code: 'INVALID_IDEMPOTENCY_KEY', message: 'Idempotency-Key phải gồm 8-64 ký tự chữ, số, gạch ngang, gạch dưới hoặc dấu chấm' });
+  }
+  // Trả lại giao dịch đã tạo bởi cùng key (không gửi lại OTP). Cùng key nhưng nội dung khác -> 422.
+  const replay = async () => {
+    const [rows] = await pool.query('SELECT transaction_id, fee_id, student_id, amount, status, payer_email FROM transactions WHERE user_id = ? AND idempotency_key = ?', [user_id, idemKey]);
+    if (rows.length === 0) return null;
+    const t = rows[0];
+    if (t.fee_id !== fee_id || t.student_id !== student_id || Math.round(Number(t.amount) * 100) !== Math.round(amt * 100)) {
+      return res.status(422).json({ success: false, code: 'IDEMPOTENCY_KEY_REUSED', message: 'Idempotency-Key này đã được dùng cho một yêu cầu khác' });
+    }
+    log(t.transaction_id, `Idempotent replay (key=${idemKey}) -> trả lại giao dịch cũ, không gửi OTP mới`);
+    return res.json({ success: true, message: 'Giao dịch đã được khởi tạo trước đó', idempotent_replay: true, transaction_id: t.transaction_id, transaction_status: t.status, amount: Number(t.amount), email: t.payer_email });
+  };
+
   try {
-    // Pre-check (read-only, DB dùng chung): user + số dư
-    const [users] = await pool.query('SELECT user_id, email, balance FROM users WHERE user_id = ?', [user_id]);
-    if (users.length === 0) {
+    if (idemKey) { const replayed = await replay(); if (replayed) return replayed; }
+
+    // Pre-check qua API của service sở hữu dữ liệu (database-per-service)
+    const { auth, tuition } = urls();
+    const u = await callService('Auth', auth, `/internal/users/${encodeURIComponent(user_id)}`, null, 'GET');
+    if (u.status === 404) {
       return res.status(404).json({ success: false, code: 'USER_NOT_FOUND', message: 'Người dùng không tồn tại' });
     }
-    const user = users[0];
+    if (!u.ok || !u.data?.data) {
+      return res.status(503).json({ success: false, code: 'SERVICE_UNAVAILABLE', message: 'Dịch vụ tài khoản không khả dụng, vui lòng thử lại' });
+    }
+    const user = u.data.data;
     if (Number(user.balance) < amt) {
       return res.status(400).json({ success: false, code: 'INSUFFICIENT_BALANCE', message: 'Số dư không đủ để thanh toán' });
     }
 
     // Pre-check học phí
-    const [fees] = await pool.query('SELECT fee_id, student_id, price, status FROM tuition_fees WHERE fee_id = ?', [fee_id]);
-    if (fees.length === 0) {
+    const f = await callService('Tuition', tuition, `/internal/fees/${encodeURIComponent(fee_id)}`, null, 'GET');
+    if (f.status === 404) {
       return res.status(404).json({ success: false, code: 'FEE_NOT_FOUND', message: 'Không tìm thấy khoản học phí' });
     }
-    const fee = fees[0];
+    if (!f.ok || !f.data?.data) {
+      return res.status(503).json({ success: false, code: 'SERVICE_UNAVAILABLE', message: 'Dịch vụ học phí không khả dụng, vui lòng thử lại' });
+    }
+    const fee = f.data.data;
     if (fee.student_id !== student_id) {
       return res.status(400).json({ success: false, code: 'FEE_STUDENT_MISMATCH', message: 'Khoản học phí không thuộc sinh viên này' });
     }
@@ -119,18 +145,29 @@ async function initiateHandler(req, res) {
       return res.status(400).json({ success: false, code: 'AMOUNT_MISMATCH', message: 'Số tiền không khớp với khoản học phí' });
     }
 
+    // Giải phóng khoản phí đang bị giữ bởi giao dịch PENDING_OTP bỏ dở quá 10 phút (người dùng đóng tab, không bấm hủy)
+    await pool.query(
+      "UPDATE transactions SET status = 'CANCELLED', failure_reason = 'Hết hạn chờ OTP' WHERE fee_id = ? AND status = 'PENDING_OTP' AND created_at < NOW() - INTERVAL 10 MINUTE",
+      [fee_id]
+    );
+
     // Tạo giao dịch PENDING_OTP (retry nếu trùng khóa — xác suất cực thấp)
     let txnId = null;
     for (let i = 0; i < 3 && !txnId; i++) {
       const candidate = newTransactionId();
       try {
         await pool.query(
-          "INSERT INTO transactions (transaction_id, user_id, fee_id, student_id, amount, status) VALUES (?, ?, ?, ?, ?, 'PENDING_OTP')",
-          [candidate, user_id, fee_id, student_id, amt]
+          "INSERT INTO transactions (transaction_id, user_id, fee_id, student_id, amount, status, payer_name, payer_email, student_name, type_of_fee, idempotency_key) VALUES (?, ?, ?, ?, ?, 'PENDING_OTP', ?, ?, ?, ?, ?)",
+          [candidate, user_id, fee_id, student_id, amt, user.full_name, user.email, fee.student_name, fee.type_of_fee, idemKey || null]
         );
         txnId = candidate;
       } catch (e) {
         if (e.code !== 'ER_DUP_ENTRY') throw e;
+        if (String(e.message).includes('uq_txn_active_fee')) {
+          return res.status(409).json({ success: false, code: 'FEE_LOCKED', message: 'Khoản học phí đang được người khác thực hiện thanh toán, vui lòng thử lại sau' });
+        }
+        // Hai request cùng Idempotency-Key chạy song song: request đến sau thua ở UNIQUE KEY -> trả lại giao dịch của request đầu
+        if (idemKey && String(e.message).includes('uq_txn_user_idem')) { const replayed = await replay(); if (replayed) return replayed; }
       }
     }
     if (!txnId) throw new Error('Không sinh được transaction_id duy nhất');
@@ -172,6 +209,11 @@ async function verifyAndPayHandler(req, res) {
       return res.status(404).json({ success: false, code: 'TRANSACTION_NOT_FOUND', message: 'Không tìm thấy giao dịch' });
     }
     txn = rows[0];
+    if (txn.user_id !== req.user.id) {
+      await connection.rollback();
+      log(txnId, `Từ chối verify-and-pay: giao dịch thuộc ${txn.user_id}, token của ${req.user.id}`);
+      return res.status(403).json({ success: false, code: 'FORBIDDEN', message: 'Giao dịch không thuộc về bạn' });
+    }
     if (txn.status !== 'PENDING_OTP') {
       await connection.rollback();
       const messages = {
@@ -257,15 +299,12 @@ async function verifyAndPayHandler(req, res) {
       return res.status(500).json({ success: false, code: 'COMPLETION_NOT_RECORDED', message: 'Thanh toán đã xử lý nhưng chưa ghi nhận, vui lòng liên hệ hỗ trợ', transaction_id: txnId });
     }
 
-    // Lấy thông tin cho biên lai
-    const [info] = await pool.query(
-      `SELECT u.full_name, u.email, s.student_name, f.type_of_fee, t.completed_at
-         FROM transactions t
-         JOIN users u ON u.user_id = t.user_id
-         LEFT JOIN students s ON s.student_id = t.student_id
-         LEFT JOIN tuition_fees f ON f.fee_id = t.fee_id
-        WHERE t.transaction_id = ?`, [txnId]);
-    const i = info[0] || {};
+    // Thông tin biên lai lấy từ snapshot lưu trong transactions (không JOIN service khác)
+    const [info] = await pool.query('SELECT completed_at FROM transactions WHERE transaction_id = ?', [txnId]);
+    const i = {
+      full_name: txn.payer_name, email: txn.payer_email, student_name: txn.student_name,
+      type_of_fee: txn.type_of_fee, completed_at: info[0]?.completed_at
+    };
 
     // Gửi biên lai bất đồng bộ: KHÔNG await, lỗi chỉ được log
     callService('Notification', notification, '/send-receipt', {
@@ -312,10 +351,14 @@ async function cancelHandler(req, res) {
   try {
     await connection.beginTransaction();
     // Cùng khóa dòng với verify-and-pay: hủy và thanh toán không thể chạy chồng nhau
-    const [rows] = await connection.query('SELECT status FROM transactions WHERE transaction_id = ? FOR UPDATE', [transaction_id]);
+    const [rows] = await connection.query('SELECT status, user_id FROM transactions WHERE transaction_id = ? FOR UPDATE', [transaction_id]);
     if (rows.length === 0) {
       await connection.rollback();
       return res.status(404).json({ success: false, code: 'TRANSACTION_NOT_FOUND', message: 'Không tìm thấy giao dịch' });
+    }
+    if (rows[0].user_id !== req.user.id) {
+      await connection.rollback();
+      return res.status(403).json({ success: false, code: 'FORBIDDEN', message: 'Giao dịch không thuộc về bạn' });
     }
     if (rows[0].status !== 'PENDING_OTP') {
       await connection.rollback();
@@ -348,9 +391,12 @@ async function resendOtpHandler(req, res) {
   }
   try {
     const [rows] = await pool.query(
-      'SELECT t.status, t.amount, u.email FROM transactions t JOIN users u ON u.user_id = t.user_id WHERE t.transaction_id = ?',
+      'SELECT status, user_id, amount, payer_email AS email FROM transactions WHERE transaction_id = ?',
       [transaction_id]);
     if (rows.length === 0) return res.status(404).json({ success: false, code: 'TRANSACTION_NOT_FOUND', message: 'Không tìm thấy giao dịch' });
+    if (rows[0].user_id !== req.user.id) {
+      return res.status(403).json({ success: false, code: 'FORBIDDEN', message: 'Giao dịch không thuộc về bạn' });
+    }
     if (rows[0].status !== 'PENDING_OTP') {
       return res.status(409).json({ success: false, code: 'INVALID_STATE_TRANSITION', message: `Không thể gửi lại OTP cho giao dịch ${rows[0].status}` });
     }
@@ -367,19 +413,14 @@ async function resendOtpHandler(req, res) {
 // 5. LỊCH SỬ GIAO DỊCH
 // ---------------------------------------------------------------------------
 async function historyHandler(req, res) {
-  const userId = req.params.user_id;
+  const userId = req.user.id; // chỉ trả lịch sử của chính người dùng trong token
   try {
-    const [users] = await pool.query('SELECT 1 FROM users WHERE user_id = ?', [userId]);
-    if (users.length === 0) return res.status(404).json({ success: false, code: 'USER_NOT_FOUND', message: 'Người dùng không tồn tại' });
-
     const [rows] = await pool.query(
-      `SELECT t.transaction_id, t.student_id, s.student_name, t.fee_id, f.type_of_fee, f.description,
-              t.amount, t.status, t.failure_reason, t.created_at, t.completed_at
-         FROM transactions t
-         LEFT JOIN students s ON s.student_id = t.student_id
-         LEFT JOIN tuition_fees f ON f.fee_id = t.fee_id
-        WHERE t.user_id = ?
-        ORDER BY t.created_at DESC, t.transaction_id DESC`, [userId]);
+      `SELECT transaction_id, student_id, student_name, fee_id, type_of_fee,
+              amount, status, failure_reason, created_at, completed_at
+         FROM transactions
+        WHERE user_id = ?
+        ORDER BY created_at DESC, transaction_id DESC`, [userId]);
 
     return res.json({
       success: true,
@@ -389,7 +430,7 @@ async function historyHandler(req, res) {
         studentName: r.student_name,
         feeId: r.fee_id,
         typeOfFee: r.type_of_fee,
-        description: r.description,
+        description: null, // không còn lưu ở payment (thuộc tuition-service)
         amount: Number(r.amount),
         status: r.status,
         failureReason: r.failure_reason,
@@ -403,12 +444,13 @@ async function historyHandler(req, res) {
   }
 }
 
+// Mọi /api/payment/* yêu cầu JWT (cùng JWT_SECRET với auth-service). /health giữ công khai.
+app.use('/api/payment', requireAuth);
 app.post('/api/payment/initiate', initiateHandler);
-app.post('/initiate', initiateHandler); // alias theo README
 app.post('/api/payment/verify-and-pay', verifyAndPayHandler);
 app.post('/api/payment/cancel', cancelHandler);
 app.post('/api/payment/resend-otp', resendOtpHandler);
-app.get('/api/payment/history/:user_id', historyHandler);
+app.get('/api/payment/history', historyHandler);
 app.get('/health', (req, res) => res.json({ success: true, service: 'payment-service' }));
 
 app.use((err, req, res, next) => {

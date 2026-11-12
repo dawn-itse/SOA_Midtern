@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { formatVND } from '../lib/data';
 import { Card } from './ui/card';
 
-const OtpModal = ({ isOpen, onClose, email, feeTitle, amount, onVerify, onResendOtp }) => {
+const OtpModal = ({ isOpen, onClose, feeTitle, amount, onVerify, onResendOtp }) => {
     const [otpValues, setOtpValues] = useState(['', '', '', '', '', '']);
     const [timer, setTimer] = useState(300);
     const [errorMsg, setErrorMsg] = useState('');
@@ -89,11 +89,11 @@ const OtpModal = ({ isOpen, onClose, email, feeTitle, amount, onVerify, onResend
 
                 <div className="p-6">
                     <p className="text-[14px] text-slate-400 mb-3">
-                        Hệ thống đã gửi một mã OTP xác thực (6 chữ số) đến email người nộp tiền:
+                        Vui lòng nhập mã OTP gồm 6 chữ số để xác nhận giao dịch.
                     </p>
                     <div className="bg-white/5 border border-dashed border-borderGlass rounded-xl p-3 flex items-center gap-2.5 text-[14px] text-brand-primary mb-6">
                         <i className="fa-solid fa-envelope"></i>
-                        <strong>{email}</strong>
+                        <strong>Mã OTP đã được gửi tới email đăng ký của bạn</strong>
                     </div>
 
                     {/* OTP Inputs */}

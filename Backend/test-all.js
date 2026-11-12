@@ -2,7 +2,14 @@
 // SCRIPT KIỂM THỬ TỰ ĐỘNG TOÀN DIỆN CHO AUTH-SERVICE VÀ TUITION-SERVICE
 // =========================================================================
 
+import { preflight } from './test-preflight.js';
+
+// Bí mật nội bộ (khớp INTERNAL_API_SECRET trong docker-compose / .env). Có thể ghi đè bằng biến môi trường.
+const INTERNAL = process.env.INTERNAL_API_SECRET || 'soa_internal_secret';
+const IH = { 'Content-Type': 'application/json', 'x-internal-secret': INTERNAL };
+
 async function runTests() {
+  await preflight();
   console.log('===============================================================');
   console.log('BẮT ĐẦU KIỂM THỬ TỰ ĐỘNG AUTH-SERVICE & TUITION-SERVICE');
   console.log('===============================================================\n');
@@ -29,7 +36,7 @@ async function runTests() {
 
   // Test 1.1: Đăng nhập sai mật khẩu -> Phải trả về 401
   try {
-    const res = await fetch('http://localhost:8001/login', {
+    const res = await fetch('http://localhost:8001/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'nguyenvana', password: 'wrongpassword' })
@@ -41,7 +48,7 @@ async function runTests() {
 
   // Test 1.2: Đăng nhập đúng thông tin nguyenvana / password123 -> Trả về 200 + Token + User
   try {
-    const res = await fetch('http://localhost:8001/login', {
+    const res = await fetch('http://localhost:8001/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'nguyenvana', password: 'password123' })
@@ -57,7 +64,7 @@ async function runTests() {
 
   // Test 1.5: Gọi /profile không có Token -> Phải bị chặn 401
   try {
-    const res = await fetch('http://localhost:8001/profile');
+    const res = await fetch('http://localhost:8001/api/auth/profile');
     assert(res.status === 401, '1.5. Gọi /profile không mang Token bị chặn mã HTTP 401 (Protected Route)');
   } catch (e) {
     assert(false, '1.5. Lỗi: ' + e.message);
@@ -65,7 +72,7 @@ async function runTests() {
 
   // Test 1.6: Gọi /profile CÓ mang Bearer Token hợp lệ -> Trả về thông tin cá nhân mới nhất
   try {
-    const res = await fetch('http://localhost:8001/profile', {
+    const res = await fetch('http://localhost:8001/api/auth/profile', {
       headers: { 'Authorization': `Bearer ${token}` }
     });
     const data = await res.json();
@@ -79,7 +86,7 @@ async function runTests() {
   try {
     const res = await fetch('http://localhost:8001/internal/deduct', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: IH,
       body: JSON.stringify({
         user_id: 'ACC001',
         amount: 9999999999, // 9 tỷ, chắc chắn không đủ
@@ -96,7 +103,7 @@ async function runTests() {
 
   // Test 2.1: Tra cứu MSSV không tồn tại -> Trả về 404
   try {
-    const res = await fetch('http://localhost:8002/lookup/MSSV_KHONG_TON_TAI');
+    const res = await fetch('http://localhost:8002/api/tuition/students/MSSV_KHONG_TON_TAI', { headers: { Authorization: `Bearer ${token}` } });
     assert(res.status === 404, '2.1. Tra cứu MSSV ảo trả về HTTP 404 Not Found');
   } catch (e) {
     assert(false, '2.1. Lỗi: ' + e.message);
@@ -104,7 +111,7 @@ async function runTests() {
 
   // Test 2.2: Tra cứu MSSV hợp lệ (524H0024 - Nguyễn Phong Phú)
   try {
-    const res = await fetch('http://localhost:8002/lookup/524H0024');
+    const res = await fetch('http://localhost:8002/api/tuition/students/524H0024', { headers: { Authorization: `Bearer ${token}` } });
     const data = await res.json();
     assert(res.status === 200 && data.success === true, '2.2. Tra cứu MSSV 524H0024 thành công trả về HTTP 200');
     assert(data.data?.student?.studentName === 'Nguyễn Phong Phú', '2.3. Tên sinh viên đúng là Nguyễn Phong Phú');
@@ -118,7 +125,7 @@ async function runTests() {
 
   // Test 2.8: Tra cứu MSSV khác (524H0129 - Phùng Mau Tiến)
   try {
-    const res = await fetch('http://localhost:8002/lookup/524H0129');
+    const res = await fetch('http://localhost:8002/api/tuition/students/524H0129', { headers: { Authorization: `Bearer ${token}` } });
     const data = await res.json();
     assert(res.status === 200 && data.data?.student?.studentName === 'Phùng Mau Tiến', '2.8. Tra cứu MSSV 524H0129 đúng Phùng Mau Tiến');
   } catch (e) {
@@ -131,14 +138,14 @@ async function runTests() {
     // Đảm bảo trước khi test, học phí đang ở trạng thái 'Chưa thanh toán'
     await fetch('http://localhost:8002/internal/revert-paid', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: IH,
       body: JSON.stringify({ fee_id: testFeeId, transaction_id: 'TXN-RESET' })
     });
 
     // LẦN 1: Gạch nợ lần đầu -> Phải THÀNH CÔNG
     const res1 = await fetch('http://localhost:8002/internal/mark-paid', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: IH,
       body: JSON.stringify({ fee_id: testFeeId, transaction_id: 'TXN-TEST-1' })
     });
     const data1 = await res1.json();
@@ -147,7 +154,7 @@ async function runTests() {
     // LẦN 2: Cùng mã học phí đó đóng lần thứ 2 (Giả lập người thứ 2 đóng trùng) -> BẮT BUỘC PHẢI BỊ CHẶN (409)
     const res2 = await fetch('http://localhost:8002/internal/mark-paid', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: IH,
       body: JSON.stringify({ fee_id: testFeeId, transaction_id: 'TXN-TEST-2' })
     });
     const data2 = await res2.json();
@@ -156,7 +163,7 @@ async function runTests() {
     // LẦN 3: Bù hoàn Saga (Revert lại trạng thái Chưa thanh toán) -> Phải thành công
     const res3 = await fetch('http://localhost:8002/internal/revert-paid', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: IH,
       body: JSON.stringify({ fee_id: testFeeId, transaction_id: 'TXN-TEST-SAGA' })
     });
     const data3 = await res3.json();
@@ -165,9 +172,32 @@ async function runTests() {
     assert(false, '2.9. Lỗi kiểm tra gạch nợ: ' + e.message);
   }
 
+  // -------------------------------------------------------------
+  // TEST PHẦN 3: BẢO MẬT (Đợt 2) - JWT, x-internal-secret, URI cũ đã bị gỡ
+  // -------------------------------------------------------------
+  console.log('\n--- KIỂM THỬ BẢO MẬT (JWT / INTERNAL SECRET) ---');
+  const status = async (url, init) => { try { return (await fetch(url, init)).status; } catch { return -1; } };
+  const forged = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IkFDQzAwMSJ9.sai-chu-ky';
+  assert(await status('http://localhost:8002/api/tuition/students/524H0024') === 401, '3.1. Tra cứu học phí KHÔNG token -> 401');
+  assert(await status('http://localhost:8002/api/tuition/students/524H0024', { headers: { Authorization: `Bearer ${forged}` } }) === 401, '3.2. Tra cứu học phí với token giả mạo -> 401');
+  assert(await status('http://localhost:8001/api/auth/profile', { headers: { Authorization: `Bearer ${forged}` } }) === 401, '3.3. /api/auth/profile với token giả mạo -> 401');
+  const post = (url, h, body) => status(url, { method: 'POST', headers: h, body: JSON.stringify(body) });
+  const J = { 'Content-Type': 'application/json' };
+  assert(await post('http://localhost:8001/internal/deduct', J, { user_id: 'ACC001', amount: 1, transaction_id: 'T' }) === 401, '3.4. /internal/deduct không có x-internal-secret -> 401');
+  assert(await post('http://localhost:8001/internal/deduct', { ...J, 'x-internal-secret': 'sai' }, { user_id: 'ACC001', amount: 1, transaction_id: 'T' }) === 401, '3.5. /internal/deduct sai x-internal-secret -> 401');
+  assert(await post('http://localhost:8002/internal/mark-paid', J, { fee_id: 'FEE-2024-HK1-0092', transaction_id: 'T' }) === 401, '3.6. /internal/mark-paid không có secret -> 401 (không thể gạch nợ trái phép)');
+  assert(await status('http://localhost:8001/internal/users/ACC001') === 401 && await status('http://localhost:8002/internal/fees/FEE-2024-HK1-0092') === 401, '3.7. GET /internal/users và /internal/fees không có secret -> 401');
+  assert(await status('http://localhost:8001/internal/users/ACC001', { headers: { 'x-internal-secret': INTERNAL } }) === 200, '3.8. GET /internal/users với secret đúng -> 200');
+  assert(await post('http://localhost:8004/send-otp', J, { transaction_id: 'T', email: 'a@test.com', amount: 1 }) === 401, '3.9. Notification /send-otp không có secret -> 401 (không thể spam OTP)');
+  assert(await post('http://localhost:8004/send-receipt', J, { email: 'a@test.com' }) === 401, '3.10. Notification /send-receipt không có secret -> 401');
+  assert(await status('http://localhost:8001/health') === 200 && await status('http://localhost:8002/health') === 200 && await status('http://localhost:8004/health') === 200, '3.11. /health vẫn công khai (healthcheck Docker)');
+  assert(await post('http://localhost:8001/login', J, { username: 'nguyenvana', password: 'password123' }) === 404, '3.12. URI cũ POST /login đã gỡ -> 404');
+  assert(await status('http://localhost:8002/lookup/524H0024') === 404, '3.13. URI cũ GET /lookup/:id đã gỡ -> 404');
+
   console.log('\n===============================================================');
   console.log(`KẾT QUẢ KIỂM THỬ: ĐẠT ${passed}/${total} BÀI TEST (${Math.round(passed/total*100)}%)`);
   console.log('===============================================================');
+  process.exit(passed === total ? 0 : 1); // mã thoát khác 0 khi có test fail (npm test dừng lại)
 }
 
-runTests();
+runTests().catch((e) => { console.error('Lỗi chạy test:', e); process.exit(1); });

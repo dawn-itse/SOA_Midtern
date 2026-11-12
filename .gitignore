@@ -1,0 +1,17 @@
+# Dependencies & build
+node_modules/
+dist/
+build/
+
+# Biến môi trường chứa bí mật (giữ lại file .env.example)
+.env
+.env.*
+!.env.example
+
+# Log, file hệ thống, IDE
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

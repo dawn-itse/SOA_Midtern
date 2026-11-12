@@ -1,9 +1,12 @@
-import { User2, LogOut, History } from 'lucide-react';
-import { Link, useNavigate } from 'react-router';
+import { User2, LogOut, History, Home } from 'lucide-react';
+import { Link, NavLink, useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import { formatVND } from '../lib/data';
 
-const Header = ({ user, onOpenHistory }) => {
+const navClass = ({ isActive }) =>
+  `flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-white text-xs sm:text-sm font-semibold transition cursor-pointer border ${isActive ? 'bg-white/30 border-white/40' : 'bg-white/15 hover:bg-white/25 border-white/25'}`;
+
+const Header = ({ user }) => {
 const navigate = useNavigate();
 
 const handleLogout = () => {
@@ -29,15 +32,14 @@ const handleLogout = () => {
             </span>
           </div>
 
-          <button
-            type="button"
-            onClick={onOpenHistory}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-white text-xs sm:text-sm font-semibold transition cursor-pointer border border-white/25"
-            title="Xem lịch sử giao dịch"
-          >
+          <NavLink to="/" end className={navClass}>
+            <Home className="size-4" />
+            <span>Trang chủ</span>
+          </NavLink>
+          <NavLink to="/history" className={navClass}>
             <History className="size-4" />
-            <span>Lịch sử GD</span>
-          </button>
+            <span>Lịch sử giao dịch</span>
+          </NavLink>
 
           <div className="flex items-center gap-3">
             <div className="hidden sm:flex items-center gap-1.5 text-white/95 text-sm font-medium bg-blue-700/60 px-3 py-1.5 rounded-xl border border-blue-400/30">

@@ -1,4 +1,5 @@
 import { Navigate, Outlet, useLocation } from 'react-router';
+import { getStoredAccount } from '../lib/user';
 
 /**
  * ProtectedRoute: Kiểm tra token xác thực người dùng.
@@ -9,7 +10,8 @@ const ProtectedRoute = ({ children }) => {
   const token = localStorage.getItem('token');
   const location = useLocation();
 
-  if (!token) {
+  // Cần cả token lẫn user hợp lệ trong localStorage (xóa user -> về /login)
+  if (!token || !getStoredAccount()) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 

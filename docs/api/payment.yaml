@@ -1,0 +1,324 @@
+openapi: 3.0.3
+info:
+  title: Payment Service API
+  version: 2.0.0
+  description: |
+    Orchestrator thanh toán: FSM `PENDING_OTP → PROCESSING → COMPLETED / FAILED`, hoặc `PENDING_OTP → CANCELLED`;
+    Saga bù hoàn khi trừ tiền thất bại sau khi đã gạch nợ.
+
+    **Mọi `/api/payment/*` yêu cầu JWT.** `user_id` luôn lấy từ token, không gửi trong body
+    (nếu có gửi mà khác token → `403 FORBIDDEN`). Giao dịch phải thuộc về người dùng trong token,
+    sai → `403 FORBIDDEN`.
+servers:
+  - url: http://localhost:8000
+    description: API Gateway (khuyến nghị)
+  - url: http://localhost:8003
+    description: Gọi thẳng service (chỉ để debug)
+security:
+  - bearerAuth: []
+paths:
+  /api/payment/initiate:
+    post:
+      summary: Khởi tạo giao dịch và gửi OTP
+      description: |
+        Kiểm tra số dư và học phí (qua API auth/tuition), tạo giao dịch `PENDING_OTP`, nhờ notification gửi OTP tới email đăng ký.
+
+        **Idempotency:** gửi header `Idempotency-Key` (8-64 ký tự) để retry an toàn. Cùng key + cùng nội dung thì nhận lại đúng giao dịch cũ
+        (`idempotent_replay: true`, không gửi OTP mới); cùng key nhưng khác nội dung thì `422 IDEMPOTENCY_KEY_REUSED`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string, minLength: 8, maxLength: 64 }
+          example: 7c1d2b9e-4f0a-4c53-9a1b-2d6f3c8e5a10
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InitiateRequest' }
+            example: { fee_id: FEE-2024-HK1-0092, student_id: 524H0024, amount: 12200000 }
+      responses:
+        '200':
+          description: Đã tạo giao dịch và gửi OTP
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InitiateResponse' }
+        '400':
+          description: "`INVALID_REQUEST`, `INVALID_AMOUNT`, `INVALID_IDEMPOTENCY_KEY`, `INSUFFICIENT_BALANCE`, `FEE_STUDENT_MISMATCH`, `AMOUNT_MISMATCH`"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { success: false, code: INSUFFICIENT_BALANCE, message: Số dư không đủ để thanh toán }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: "`USER_NOT_FOUND`, `FEE_NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: "`ALREADY_PAID` - khoản học phí đã được thanh toán"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { success: false, code: ALREADY_PAID, message: Khoản học phí này đã được thanh toán }
+        '422':
+          description: "`IDEMPOTENCY_KEY_REUSED` - key đã dùng cho yêu cầu khác"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          description: "`OTP_SEND_FAILED` - không gửi được OTP (giao dịch được đánh dấu FAILED)"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: "`SERVICE_UNAVAILABLE` - auth hoặc tuition không phản hồi"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/ServerError' }
+  /api/payment/verify-and-pay:
+    post:
+      summary: Xác thực OTP và thanh toán (FSM + Saga)
+      description: |
+        Khóa dòng giao dịch, `PENDING_OTP → PROCESSING`, xác thực OTP, gạch nợ học phí, trừ tiền, `COMPLETED`.
+        Nhiều request đồng thời cho cùng một giao dịch: đúng 1 request được xử lý, các request còn lại nhận 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transaction_id, otp_code]
+              properties:
+                transaction_id: { type: string, example: TXN-1731390000000-AB12CD34 }
+                otp_code: { type: string, example: '123456' }
+      responses:
+        '200':
+          description: Thanh toán thành công
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PayResponse' }
+        '400':
+          description: "`INVALID_REQUEST`; lỗi OTP `OTP_EXPIRED` / `OTP_MISMATCH` / `OTP_ALREADY_USED`; `INSUFFICIENT_BALANCE` (Saga đã hoàn tác gạch nợ). Giao dịch chuyển FAILED"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { success: false, code: OTP_MISMATCH, message: Mã OTP không đúng, transaction_status: FAILED }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: "`TRANSACTION_NOT_FOUND` hoặc `FEE_NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: "Giao dịch không còn ở `PENDING_OTP` (`TRANSACTION_PROCESSING` / `TRANSACTION_COMPLETED` / `TRANSACTION_CANCELLED` / `TRANSACTION_FAILED`), hoặc học phí đã được người khác thanh toán (`ALREADY_PAID`, `CONCURRENCY_CONFLICT`)"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { success: false, code: TRANSACTION_COMPLETED, message: Giao dịch đã hoàn tất trước đó, transaction_status: COMPLETED }
+        '500':
+          description: "`INTERNAL_ERROR`, `COMPENSATION_FAILED`, `COMPLETION_NOT_RECORDED` (cần đối soát)"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: "`NOTIFICATION_UNAVAILABLE` hoặc `TUITION_UNAVAILABLE`"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/payment/cancel:
+    post:
+      summary: Hủy giao dịch đang chờ OTP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TransactionRef' }
+      responses:
+        '200':
+          description: Đã hủy
+          content:
+            application/json:
+              example: { success: true, message: Đã hủy giao dịch, transaction_id: TXN-1731390000000-AB12CD34, transaction_status: CANCELLED, otp_invalidated: true }
+        '400':
+          description: "`INVALID_REQUEST`"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: "`TRANSACTION_NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: "`INVALID_STATE_TRANSITION` - chỉ hủy được khi đang `PENDING_OTP`"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/ServerError' }
+  /api/payment/resend-otp:
+    post:
+      summary: Gửi lại OTP (OTP cũ mất hiệu lực)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TransactionRef' }
+      responses:
+        '200':
+          description: Đã gửi lại OTP
+          content:
+            application/json:
+              example: { success: true, message: Đã gửi lại OTP, transaction_id: TXN-1731390000000-AB12CD34, email: nguyenvana.banking@gmail.com, expires_in: 300 }
+        '400':
+          description: "`INVALID_REQUEST`"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: "`TRANSACTION_NOT_FOUND`"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: "`INVALID_STATE_TRANSITION` - giao dịch không còn `PENDING_OTP`"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          description: "`OTP_SEND_FAILED`"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/ServerError' }
+  /api/payment/history:
+    get:
+      summary: Lịch sử giao dịch của chính người dùng trong token
+      description: "Chỉ đọc `payment_db.transactions`. Người dùng chưa có giao dịch thì `data` là mảng rỗng. Mới nhất trước."
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/HistoryItem' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/ServerError' }
+  /health:
+    get:
+      summary: Healthcheck (công khai)
+      security: []
+      responses:
+        '200':
+          description: Service đang chạy
+          content:
+            application/json:
+              example: { success: true, service: payment-service }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT lấy từ `POST /api/auth/login` (auth-service, cổng 8001). Payment dùng chung `JWT_SECRET` để kiểm tra.
+    internalSecret:
+      type: apiKey
+      in: header
+      name: x-internal-secret
+      description: Payment gắn header này khi gọi auth/tuition/notification (không dùng cho API công khai ở trên).
+  responses:
+    Unauthorized:
+      description: "Thiếu/sai/hết hạn token. Mã lỗi `UNAUTHORIZED`"
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { success: false, code: UNAUTHORIZED, message: "Thiếu hoặc sai token đăng nhập, hoặc token đã hết hạn" }
+    Forbidden:
+      description: "`FORBIDDEN` - `user_id` trong body khác token, hoặc giao dịch không thuộc về người dùng trong token"
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { success: false, code: FORBIDDEN, message: Giao dịch không thuộc về bạn }
+    ServerError:
+      description: "`INTERNAL_ERROR`"
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { success: false, code: INTERNAL_ERROR, message: Lỗi server }
+  schemas:
+    Error:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        code: { type: string }
+        message: { type: string }
+        transaction_id: { type: string }
+        transaction_status: { type: string, enum: [PENDING_OTP, PROCESSING, COMPLETED, FAILED, CANCELLED] }
+    InitiateRequest:
+      type: object
+      required: [fee_id, student_id, amount]
+      properties:
+        fee_id: { type: string, example: FEE-2024-HK1-0092 }
+        student_id: { type: string, example: 524H0024 }
+        amount: { type: number, example: 12200000, description: Phải khớp đúng giá khoản học phí }
+    InitiateResponse:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        message: { type: string, example: Đã gửi OTP }
+        idempotent_replay: { type: boolean, description: "Có mặt (true) khi đây là kết quả của một request đã xử lý trước đó với cùng Idempotency-Key" }
+        transaction_status: { type: string, description: "Chỉ có khi replay" }
+        transaction_id: { type: string, example: TXN-1731390000000-AB12CD34 }
+        amount: { type: number, example: 12200000 }
+        email: { type: string }
+        expires_in: { type: integer, example: 300, description: Số giây OTP còn hiệu lực }
+    TransactionRef:
+      type: object
+      required: [transaction_id]
+      properties:
+        transaction_id: { type: string, example: TXN-1731390000000-AB12CD34 }
+    PayResponse:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        message: { type: string, example: Thanh toán học phí thành công }
+        data:
+          type: object
+          properties:
+            transactionId: { type: string }
+            status: { type: string, example: COMPLETED }
+            amount: { type: number }
+            feeId: { type: string }
+            typeOfFee: { type: string }
+            studentId: { type: string }
+            studentName: { type: string }
+            payerName: { type: string }
+            email: { type: string }
+            newBalance: { type: number }
+            completedAt: { type: string, format: date-time }
+    HistoryItem:
+      type: object
+      properties:
+        transactionId: { type: string }
+        studentId: { type: string }
+        studentName: { type: string }
+        feeId: { type: string }
+        typeOfFee: { type: string }
+        description: { type: string, nullable: true, description: Luôn null (mô tả thuộc tuition-service) }
+        amount: { type: number }
+        status: { type: string, enum: [PENDING_OTP, PROCESSING, COMPLETED, FAILED, CANCELLED] }
+        failureReason: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time, nullable: true }

@@ -2,6 +2,7 @@ import { User,Lock,Eye,EyeOff,ArrowRight } from 'lucide-react';
 import { useState,useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router';
 import { toast } from 'sonner';
+import { request, AUTH_API } from '../lib/api';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -32,36 +33,24 @@ export default function Login() {
     }
 
     setIsLoading(true);
-    try {
-      // Gọi API thật đến Auth Service (cổng 8001)
-      const res = await fetch('http://localhost:8001/login', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          username: username.trim(),
-          password: password.trim()
-        })
-      });
+    // Gọi API thật đến Auth Service
+    const { ok, status, data } = await request('POST', `${AUTH_API}/login`, {
+      username: username.trim(),
+      password: password.trim()
+    });
+    setIsLoading(false);
 
-      const data = await res.json();
+    if (ok) {
+      // Lưu vé Token và thông tin User thật từ MySQL vào localStorage
+      localStorage.setItem('token', data.data.token);
+      localStorage.setItem('user', JSON.stringify(data.data.user));
 
-      if (res.ok && data.success) {
-        // Lưu vé Token và thông tin User thật từ MySQL vào localStorage
-        localStorage.setItem('token', data.data.token);
-        localStorage.setItem('user', JSON.stringify(data.data.user));
-
-        toast.success(`Đăng nhập thành công! Chào mừng ${data.data.user.full_name}`);
-        navigate(from, { replace: true });
-      } else {
-        setError(data.message || 'Tên đăng nhập hoặc mật khẩu không chính xác.');
-      }
-    } catch (err) {
-      console.error('Lỗi kết nối server:', err);
-      setError('Không thể kết nối đến Auth Service (Port 8001). Bạn hãy đảm bảo server đã chạy npm start nhé!');
-    } finally {
-      setIsLoading(false);
+      toast.success(`Đăng nhập thành công! Chào mừng ${data.data.user.full_name}`);
+      navigate(from, { replace: true });
+    } else if (status === 0) {
+      setError('Không thể kết nối đến Auth Service (Port 8001). Hãy đảm bảo hệ thống đã chạy (start-all.bat hoặc docker compose up -d).');
+    } else {
+      setError(data.message || 'Tên đăng nhập hoặc mật khẩu không chính xác.');
     }
   };  
   
