@@ -3,8 +3,12 @@ chcp 65001 >nul
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
+if "%~1"=="__run_test" goto :sub_run_test
+if "%~1"=="__kill_tests" goto :sub_kill_tests
+if /i "%~1"=="stop" goto :sub_stop
+
 echo ============================================================
-echo   TDTU iBanking - Khởi động toàn bộ hệ thống (Docker)
+echo   TDTU iBanking - Quản lý hệ thống (Docker Compose)
 echo ============================================================
 echo.
 
@@ -27,13 +31,16 @@ if errorlevel 1 (
   exit /b 1
 )
 
-rem ---------- 2. Chọn chế độ email ----------
-echo Chọn chế độ gửi email OTP / biên lai:
-echo   [1] Mailpit (mặc định) - không cần cấu hình, xem mail trên web
-echo   [2] Gmail thật
+rem ---------- 2. Chọn chế độ ----------
+echo Chọn thao tác / chế độ gửi email OTP:
+echo   [1] Khởi động với Mailpit (mặc định - xem mail trên web)
+echo   [2] Khởi động với Gmail thật
+echo   [3] Dừng toàn bộ hệ thống (và đóng các cửa sổ test)
 set "MODE=1"
-set /p "MODE=Nhập 1 hoặc 2 (Enter = 1): "
+set /p "MODE=Nhập 1, 2 hoặc 3 (Enter = 1): "
 if "!MODE!"=="" set "MODE=1"
+
+if "!MODE!"=="3" goto :sub_stop
 
 set "SMTP_USER="
 set "SMTP_PASS="
@@ -74,11 +81,10 @@ set "SMTP_HOST=smtp.gmail.com"
 set "SMTP_PORT=587"
 set "MAILINFO=Mail gửi tới: !MAIL_TO_OVERRIDE!"
 
-rem ---------- 5-6. Chạy compose (cấu hình chỉ nằm trong biến môi trường của phiên cmd này) ----------
+rem ---------- 5-6. Chạy compose ----------
 :run
 echo.
 echo Đang build và khởi động các container (lần đầu có thể mất vài phút)...
-rem Chạy lại file .bat với chế độ khác: compose tự tạo lại container khi biến môi trường thay đổi.
 docker compose up -d --build
 if errorlevel 1 (
   echo [LỖI] docker compose thất bại. Xem thông báo phía trên.
@@ -112,33 +118,31 @@ rem ---------- 7. Bảng thông tin ----------
 :ready
 echo.
 echo ============================================================
-echo   HỆ THỐNG ĐÃ SẴN SÀNG
+echo   HỆ THỐNG ĐÃ SẴNG SÀNG
 echo ============================================================
-echo   Frontend  : http://localhost:5173
-echo   API Gateway: http://localhost:8000  (frontend gọi API qua đây)
-echo   Auth API  : http://localhost:8001
-echo   Tuition   : http://localhost:8002
-echo   Payment   : http://localhost:8003
+echo   Frontend    : http://localhost:5173
+echo   API Gateway : http://localhost:8000  (frontend gọi API qua đây)
+echo   Auth API    : http://localhost:8001
+echo   Tuition     : http://localhost:8002
+echo   Payment     : http://localhost:8003
 echo   Notification: http://localhost:8004  (API nội bộ, cần x-internal-secret)
-echo   Swagger UI : http://localhost:8080  (tài liệu OpenAPI 4 service)
+echo   Swagger UI  : http://localhost:8080  (tài liệu OpenAPI 4 service)
 echo   !MAILINFO!
 echo.
-echo   MySQL     : host localhost, cổng 3307, user root, mật khẩu password
-echo               (user riêng: auth_user, tuition_user, payment_user, notification_user)
+echo   MySQL       : host localhost, cổng 3307, user root, mật khẩu password
+echo                 (user riêng: auth_user, tuition_user, payment_user, notification_user)
 echo.
 echo   Tài khoản demo : nguyenvana / password123, tranthib / password123
 echo   MSSV mẫu       : 524H0024, 524H0129
 echo.
-echo   Dừng hệ thống     : stop-all.bat  (đồng thời đóng các cửa sổ test)
+echo   Dừng hệ thống     : chạy lại start-all.bat chọn [3] (hoặc: start-all.bat stop)
 echo   Reset dữ liệu     : docker compose down -v
 echo ============================================================
 start "" "http://localhost:5173"
-rem Mailpit chỉ có khi dùng chế độ 1 (Mailpit); chế độ Gmail thì mail đi vào hộp thư thật
 if "!MODE!"=="1" start "" "http://localhost:8025"
 
-rem ---------- 8. Mở các cửa sổ chạy test tự động (mỗi file test 1 cửa sổ, chạy tuần tự) ----------
+rem ---------- 8. Mở các cửa sổ chạy test tự động ----------
 echo.
-rem Chế độ Gmail: test sẽ gửi mail thật tới MAIL_TO_OVERRIDE nên mặc định KHÔNG chạy
 set "RUNTEST=Y"
 if not "!MODE!"=="1" set "RUNTEST=N"
 set /p "RUNTEST=Mở 3 cửa sổ chạy test tự động? [Y/N] (Enter = !RUNTEST!): "
@@ -156,14 +160,83 @@ if not exist "Backend\node_modules\mysql2" (
   popd
 )
 
-rem Đóng cửa sổ test của lần chạy trước (nếu còn) rồi tạo thư mục đánh dấu mới
-call "%~dp0kill-tests.bat"
+call :sub_kill_tests
 md "%TEMP%\ibanking_tests" >nul 2>&1
 
-start "TEST-1-AUTH-TUITION" cmd /k call "%~dp0run-test.bat" 1 TEST-1-AUTH-TUITION test-all.js
-start "TEST-2-PAYMENT" cmd /k call "%~dp0run-test.bat" 2 TEST-2-PAYMENT test-payment.js
-start "TEST-3-E2E" cmd /k call "%~dp0run-test.bat" 3 TEST-3-E2E test-e2e.js
-echo Đã mở 3 cửa sổ test. Chúng chạy lần lượt 1 → 2 → 3 và sẽ được đóng khi chạy stop-all.bat.
+start "TEST-1-AUTH-TUITION" cmd /k call "%~f0" __run_test 1 TEST-1-AUTH-TUITION test-all.js
+start "TEST-2-PAYMENT" cmd /k call "%~f0" __run_test 2 TEST-2-PAYMENT test-payment.js
+start "TEST-3-E2E" cmd /k call "%~f0" __run_test 3 TEST-3-E2E test-e2e.js
+echo Đã mở 3 cửa sổ test. Chúng chạy lần lượt 1 → 2 → 3 và sẽ được đóng khi dừng hệ thống.
 :skiptests
 pause
 endlocal
+exit /b 0
+
+rem ============================================================
+rem SUBROUTINE: Đóng các cửa sổ test
+rem ============================================================
+:sub_kill_tests
+powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '__run_test' -and $_.ProcessId -ne $PID } | ForEach-Object { taskkill /PID $_.ProcessId /T /F 2>$null | Out-Null }"
+if exist "%TEMP%\ibanking_tests" rd /s /q "%TEMP%\ibanking_tests" >nul 2>&1
+exit /b 0
+
+rem ============================================================
+rem SUBROUTINE: Dừng toàn bộ hệ thống Docker & đóng cửa sổ test
+rem ============================================================
+:sub_stop
+echo.
+echo [1/2] Dừng hệ thống Docker...
+set "ANS=N"
+set /p "ANS=Xóa luôn dữ liệu database - down -v? [y/N]: "
+if /i "!ANS!"=="y" (
+  docker compose -f "%~dp0docker-compose.yml" -p ibanking down -v --remove-orphans
+) else (
+  docker compose -f "%~dp0docker-compose.yml" -p ibanking down --remove-orphans
+)
+echo   docker compose kết thúc, mã thoát: !errorlevel!
+echo.
+echo [2/2] Đóng các cửa sổ test...
+call :sub_kill_tests
+echo.
+echo Hoàn tất.
+pause
+endlocal
+exit /b 0
+
+rem ============================================================
+rem SUBROUTINE: Chạy 1 bộ test tuần tự trong cửa sổ riêng
+rem ============================================================
+:sub_run_test
+set "N=%~2"
+set "TITLE=%~3"
+set "TESTFILE=%~4"
+set "MK=%TEMP%\ibanking_tests"
+title !TITLE!
+cd /d "%~dp0Backend"
+
+for /f "usebackq" %%P in (`powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId"`) do >"%MK%\!N!.pid" echo %%P
+
+if "!N!"=="1" goto :do_run_test
+set /a PREV=N-1
+echo [!TITLE!] Đang chờ bộ test trước đó chạy xong (các bộ test dùng chung dữ liệu mẫu nên chạy tuần tự)...
+:wait_prev_test
+if exist "%MK%\!PREV!.done" goto :do_run_test
+timeout /t 2 /nobreak >nul
+goto :wait_prev_test
+
+:do_run_test
+echo.
+echo ============================================================
+echo   !TITLE!  -  node !TESTFILE!
+echo ============================================================
+node !TESTFILE!
+set "RC=!errorlevel!"
+>"%MK%\!N!.done" echo done
+echo.
+echo ============================================================
+if "!RC!"=="0" (echo   KẾT QUẢ: PASS) else (echo   KẾT QUẢ: FAIL - mã thoát !RC!)
+echo   Cửa sổ này sẽ được đóng khi dừng hệ thống qua start-all.bat
+echo ============================================================
+title !TITLE!
+endlocal
+exit /b !RC!

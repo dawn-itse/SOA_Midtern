@@ -55,7 +55,7 @@ Yêu cầu: **Docker Desktop**.
 
 Mở http://localhost:5173, đăng nhập `nguyenvana` / `password123`, tra cứu MSSV `524H0024`, thanh toán, rồi xem mã OTP tại http://localhost:8025. Tài liệu API (Swagger UI): http://localhost:8080.
 
-Dừng: `stop-all.bat` hoặc `docker compose down`. Reset dữ liệu: `docker compose down -v`.
+Dừng: chạy `start-all.bat` chọn `[3]` (hoặc `start-all.bat stop` / `docker compose down`). Reset dữ liệu: `docker compose down -v`.
 
 > Các script trong `/docker-entrypoint-initdb.d/` (thư mục `Backend/db/`) **chỉ chạy lần đầu** khi volume MySQL còn trống. Muốn nạp lại dữ liệu mẫu: `docker compose down -v` rồi chạy lại.
 
@@ -107,7 +107,7 @@ API nội bộ (`/internal/*`, notification) xem [docs/internal-api-contract.md]
 
 ## 7. Test tự động
 
-`start-all.bat` hỏi có mở **3 cửa sổ terminal** chạy test tự động hay không (Enter = có ở chế độ Mailpit). Ba bộ test dùng chung dữ liệu mẫu nên chạy **lần lượt** 1 → 2 → 3; mỗi cửa sổ báo `PASS` hoặc `FAIL` ở cuối và được `stop-all.bat` tự đóng. Ở chế độ Gmail thật, mặc định không chạy test để tránh gửi mail thật. Yêu cầu: Node.js (script tự cài thư viện cho test ở lần đầu).
+`start-all.bat` hỏi có mở **3 cửa sổ terminal** chạy test tự động hay không (Enter = có ở chế độ Mailpit). Ba bộ test dùng chung dữ liệu mẫu nên chạy **lần lượt** 1 → 2 → 3; mỗi cửa sổ báo `PASS` hoặc `FAIL` ở cuối và được tự đóng khi dừng hệ thống qua `start-all.bat`. Ở chế độ Gmail thật, mặc định không chạy test để tránh gửi mail thật. Yêu cầu: Node.js (script tự cài thư viện cho test ở lần đầu).
 
 | Cửa sổ | File | Phạm vi kiểm thử |
 |---|---|---|
