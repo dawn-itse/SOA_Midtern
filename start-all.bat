@@ -1,242 +1,212 @@
+<# :
 @echo off
 chcp 65001 >nul
-setlocal EnableDelayedExpansion
 cd /d "%~dp0"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([ScriptBlock]::Create([System.IO.File]::ReadAllText('%~f0', [System.Text.Encoding]::UTF8))) @args" %*
+exit /b %errorlevel%
+#>
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$ROOT = (Get-Location).Path
 
-if "%~1"=="__run_test" goto :sub_run_test
-if "%~1"=="__kill_tests" goto :sub_kill_tests
-if /i "%~1"=="stop" goto :sub_stop
+function Stop-System {
+    Write-Host ""
+    Write-Host "[1/1] Dừng hệ thống Docker..." -ForegroundColor Yellow
+    $ans = Read-Host "Xóa luôn dữ liệu database (down -v)? [y/N]"
+    if ($ans -match '^[yY]$') {
+        docker compose -f "$ROOT\docker-compose.yml" -p ibanking down -v --remove-orphans
+    } else {
+        docker compose -f "$ROOT\docker-compose.yml" -p ibanking down --remove-orphans
+    }
+    Write-Host ""
+    Write-Host "Hoàn tất." -ForegroundColor Green
+    Read-Host "Nhấn Enter để đóng"
+    exit 0
+}
 
-echo ============================================================
-echo   TDTU iBanking - Quản lý hệ thống (Docker Compose)
-echo ============================================================
-echo.
+if ($args.Count -gt 0 -and $args[0] -eq 'stop') {
+    Stop-System
+}
 
-rem ---------- 1. Kiểm tra Docker ----------
-docker --version >nul 2>&1
-if errorlevel 1 (
-  echo [LỖI] Chưa cài Docker Desktop.
-  echo   Tải và cài đặt tại: https://www.docker.com/products/docker-desktop/
-  echo   Sau khi cài xong, mở Docker Desktop rồi chạy lại file này.
-  start "" "https://www.docker.com/products/docker-desktop/"
-  pause
-  exit /b 1
-)
-docker info >nul 2>&1
-if errorlevel 1 (
-  echo [LỖI] Docker Desktop chưa chạy.
-  echo   Đang thử mở Docker Desktop... hãy đợi biểu tượng cá voi báo "running" rồi chạy lại file này.
-  if exist "%ProgramFiles%\Docker\Docker\Docker Desktop.exe" start "" "%ProgramFiles%\Docker\Docker\Docker Desktop.exe"
-  pause
-  exit /b 1
-)
+Write-Host "============================================================" -ForegroundColor Cyan
+Write-Host "  TDTU iBanking - Quản lý hệ thống (Docker Compose)" -ForegroundColor Cyan
+Write-Host "============================================================" -ForegroundColor Cyan
+Write-Host ""
 
-rem ---------- 2. Chọn chế độ ----------
-echo Chọn thao tác / chế độ gửi email OTP:
-echo   [1] Khởi động với Mailpit (mặc định - xem mail trên web)
-echo   [2] Khởi động với Gmail thật
-echo   [3] Dừng toàn bộ hệ thống (và đóng các cửa sổ test)
-set "MODE=1"
-set /p "MODE=Nhập 1, 2 hoặc 3 (Enter = 1): "
-if "!MODE!"=="" set "MODE=1"
+# 1. Kiểm tra Docker
+docker --version *> $null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[LỖI] Chưa cài Docker Desktop." -ForegroundColor Red
+    Write-Host "  Tải và cài đặt tại: https://www.docker.com/products/docker-desktop/"
+    Read-Host "Nhấn Enter để thoát"
+    exit 1
+}
 
-if "!MODE!"=="3" goto :sub_stop
+docker info *> $null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[LỖI] Docker Desktop chưa chạy." -ForegroundColor Red
+    Write-Host "  Hãy mở Docker Desktop, đợi biểu tượng cá voi báo 'running' rồi chạy lại file này."
+    Read-Host "Nhấn Enter để thoát"
+    exit 1
+}
 
-set "SMTP_USER="
-set "SMTP_PASS="
-set "SMTP_FROM="
-set "MAIL_TO_OVERRIDE="
+# 2. Chọn chế độ
+Write-Host "Chọn thao tác / chế độ gửi email OTP:"
+Write-Host "  [1] Khởi động với Mailpit (mặc định - xem mail trên web)"
+Write-Host "  [2] Khởi động với Gmail thật"
+Write-Host "  [3] Dừng toàn bộ hệ thống Docker"
+$mode = Read-Host "Nhập 1, 2 hoặc 3 (Enter = 1)"
+if ([string]::IsNullOrWhiteSpace($mode)) { $mode = "1" }
 
-if "!MODE!"=="2" goto :gmail
+if ($mode -eq "3") {
+    Stop-System
+}
 
-rem ---------- 3. Chế độ 1: Mailpit ----------
-set "SMTP_HOST=mailpit"
-set "SMTP_PORT=1025"
-set "MAILINFO=Mailpit: http://localhost:8025"
-goto :run
+$env:SMTP_USER = ""
+$env:SMTP_PASS = ""
+$env:SMTP_FROM = ""
+$env:MAIL_TO_OVERRIDE = ""
 
-rem ---------- 4. Chế độ 2: Gmail thật ----------
-:gmail
-echo.
-echo ---- Hướng dẫn tạo App Password cho Gmail GỬI ----
-echo   1. Bật xác thực 2 bước cho tài khoản Gmail dùng để gửi.
-echo   2. Mở https://myaccount.google.com/apppasswords
-echo   3. Tạo mật khẩu ứng dụng (16 ký tự) và dán vào bên dưới.
-echo   (App Password là của Gmail GỬI; email NHẬN OTP nhập ở bước sau)
-echo.
-:ask_user
-set "SMTP_USER="
-set /p "SMTP_USER=Gmail GỬI (SMTP_USER): "
-echo !SMTP_USER! | findstr /r "@" >nul || (echo   Email không hợp lệ, nhập lại. & goto :ask_user)
-:ask_pass
-set "SMTP_PASS="
-for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "$s = Read-Host 'App Password của Gmail gửi (ẩn ký tự)' -AsSecureString; $b = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s); [Runtime.InteropServices.Marshal]::PtrToStringAuto($b)"`) do set "SMTP_PASS=%%P"
-set "SMTP_PASS=!SMTP_PASS: =!"
-if "!SMTP_PASS!"=="" (echo   Chưa nhập App Password, nhập lại. & goto :ask_pass)
-:ask_to
-set "MAIL_TO_OVERRIDE="
-set /p "MAIL_TO_OVERRIDE=Email NHẬN OTP (MAIL_TO_OVERRIDE): "
-echo !MAIL_TO_OVERRIDE! | findstr /r "@" >nul || (echo   Email không hợp lệ, nhập lại. & goto :ask_to)
-set "SMTP_HOST=smtp.gmail.com"
-set "SMTP_PORT=587"
-set "MAILINFO=Mail gửi tới: !MAIL_TO_OVERRIDE!"
+if ($mode -eq "2") {
+    Write-Host ""
+    Write-Host "---- Hướng dẫn tạo App Password cho Gmail GỬI ----" -ForegroundColor Yellow
+    Write-Host "  1. Bật xác thực 2 bước cho tài khoản Gmail dùng để gửi."
+    Write-Host "  2. Mở https://myaccount.google.com/apppasswords"
+    Write-Host "  3. Tạo mật khẩu ứng dụng (16 ký tự) và dán vào bên dưới."
+    Write-Host ""
+    do {
+        $smtpUser = Read-Host "Gmail GỬI (SMTP_USER)"
+    } while ($smtpUser -notmatch "@")
 
-rem ---------- 5-6. Chạy compose ----------
-:run
-echo.
-echo Đang build và khởi động các container (lần đầu có thể mất vài phút)...
+    do {
+        $sec = Read-Host "App Password của Gmail gửi (ẩn ký tự)" -AsSecureString
+        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+        $smtpPass = ([Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)) -replace '\s+', ''
+    } while ([string]::IsNullOrWhiteSpace($smtpPass))
+
+    do {
+        $mailTo = Read-Host "Email NHẬN OTP (MAIL_TO_OVERRIDE)"
+    } while ($mailTo -notmatch "@")
+
+    $env:SMTP_HOST = "smtp.gmail.com"
+    $env:SMTP_PORT = "587"
+    $env:SMTP_USER = $smtpUser.Trim()
+    $env:SMTP_PASS = $smtpPass
+    $env:MAIL_TO_OVERRIDE = $mailTo.Trim()
+    $mailInfo = "Mail gửi tới: $($env:MAIL_TO_OVERRIDE)"
+} else {
+    $env:SMTP_HOST = "mailpit"
+    $env:SMTP_PORT = "1025"
+    $mailInfo = "Mailpit     : http://localhost:8025"
+}
+
+# 3. Tự động kiểm tra xung đột cổng 8080 (Swagger UI)
+if (-not $env:SWAGGER_PORT) {
+    $busy8080 = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue | Where-Object {
+        $p = (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName
+        $p -and ($p -notmatch 'docker|vpnkit')
+    }
+    if ($busy8080) {
+        $env:SWAGGER_PORT = "8088"
+        Write-Host "[LƯU Ý] Cổng 8080 đang bị phần mềm khác trên máy chiếm -> tự động chuyển Swagger UI sang cổng 8088." -ForegroundColor Yellow
+    } else {
+        $env:SWAGGER_PORT = "8080"
+    }
+}
+
+# 4. Chạy docker compose
+Write-Host ""
+Write-Host "Đang build và khởi động các container (lần đầu có thể mất vài phút)..." -ForegroundColor Cyan
 docker compose up -d --build
-if errorlevel 1 (
-  echo [LỖI] docker compose thất bại. Xem thông báo phía trên.
-  pause
-  exit /b 1
-)
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[LỖI] docker compose thất bại. Xem thông báo phía trên." -ForegroundColor Red
+    Read-Host "Nhấn Enter để thoát"
+    exit 1
+}
 
-echo.
-echo Đang chờ các dịch vụ sẵn sàng (tối đa ~3 phút)...
-set /a TRIES=0
-:wait
-set "NOTREADY="
-for %%C in (ibanking_mysql ibanking_auth ibanking_tuition ibanking_notification ibanking_payment ibanking_gateway) do (
-  set "ST="
-  for /f "delims=" %%S in ('docker inspect -f "{{.State.Health.Status}}" %%C 2^>nul') do set "ST=%%S"
-  if not "!ST!"=="healthy" set "NOTREADY=!NOTREADY! %%C"
-)
-if not defined NOTREADY goto :ready
-set /a TRIES+=1
-if !TRIES! GEQ 60 (
-  echo [CẢNH BÁO] Hết thời gian chờ. Chưa sẵn sàng:!NOTREADY!
-  echo   Xem log bằng: docker compose logs
-  pause
-  exit /b 1
-)
-echo   [!TRIES!/60] Chưa sẵn sàng:!NOTREADY!
-timeout /t 3 /nobreak >nul
-goto :wait
+# 4. Chờ các container healthy
+Write-Host ""
+Write-Host "Đang chờ các dịch vụ sẵn sàng (tối đa ~3 phút)..." -ForegroundColor Cyan
+$containers = @("ibanking_mysql", "ibanking_auth", "ibanking_tuition", "ibanking_notification", "ibanking_payment", "ibanking_gateway")
+for ($tries = 1; $tries -le 60; $tries++) {
+    $notReady = @()
+    foreach ($c in $containers) {
+        $st = (docker inspect -f "{{.State.Health.Status}}" $c 2>$null)
+        if ($st -ne "healthy") { $notReady += $c }
+    }
+    if ($notReady.Count -eq 0) { break }
+    if ($tries -eq 60) {
+        Write-Host "[CẢNH BÁO] Hết thời gian chờ. Chưa sẵn sàng: $($notReady -join ', ')" -ForegroundColor Yellow
+        Read-Host "Nhấn Enter để thoát"
+        exit 1
+    }
+    Write-Host "  [$tries/60] Chưa sẵn sàng: $($notReady -join ' ')"
+    Start-Sleep -Seconds 3
+}
 
-rem ---------- 7. Bảng thông tin ----------
-:ready
-echo.
-echo ============================================================
-echo   HỆ THỐNG ĐÃ SẴNG SÀNG
-echo ============================================================
-echo   Frontend    : http://localhost:5173
-echo   API Gateway : http://localhost:8000  (frontend gọi API qua đây)
-echo   Auth API    : http://localhost:8001
-echo   Tuition     : http://localhost:8002
-echo   Payment     : http://localhost:8003
-echo   Notification: http://localhost:8004  (API nội bộ, cần x-internal-secret)
-echo   Swagger UI  : http://localhost:8080  (tài liệu OpenAPI 4 service)
-echo   !MAILINFO!
-echo.
-echo   MySQL       : host localhost, cổng 3307, user root, mật khẩu password
-echo                 (user riêng: auth_user, tuition_user, payment_user, notification_user)
-echo.
-echo   Tài khoản demo : nguyenvana / password123, tranthib / password123
-echo   MSSV mẫu       : 524H0024, 524H0129
-echo.
-echo   Dừng hệ thống     : chạy lại start-all.bat chọn [3] (hoặc: start-all.bat stop)
-echo   Reset dữ liệu     : docker compose down -v
-echo ============================================================
-start "" "http://localhost:5173"
-if "!MODE!"=="1" start "" "http://localhost:8025"
+# 5. Bảng thông tin
+Write-Host ""
+Write-Host "============================================================" -ForegroundColor Green
+Write-Host "  HỆ THỐNG ĐÃ SẴN SÀNG" -ForegroundColor Green
+Write-Host "============================================================" -ForegroundColor Green
+Write-Host "  Frontend    : http://localhost:5173"
+Write-Host "  API Gateway : http://localhost:8000  (frontend gọi API qua đây)"
+Write-Host "  Auth API    : http://localhost:8001"
+Write-Host "  Tuition     : http://localhost:8002"
+Write-Host "  Payment     : http://localhost:8003"
+Write-Host "  Notification: http://localhost:8004  (API nội bộ, cần x-internal-secret)"
+Write-Host "  Swagger UI  : http://localhost:$($env:SWAGGER_PORT)  (tài liệu OpenAPI 4 service)"
+Write-Host "  $mailInfo"
+Write-Host ""
+Write-Host "  MySQL       : host localhost, cổng 3307, user root, mật khẩu password"
+Write-Host "                (user riêng: auth_user, tuition_user, payment_user, notification_user)"
+Write-Host ""
+Write-Host "  Tài khoản demo : nguyenvana / password123, tranthib / password123"
+Write-Host "  MSSV mẫu       : 524H0024, 524H0129"
+Write-Host ""
+Write-Host "  Dừng hệ thống  : chạy lại start-all.bat chọn [3] (hoặc: .\start-all.bat stop)"
+Write-Host "  Reset dữ liệu  : docker compose down -v"
+Write-Host "============================================================" -ForegroundColor Green
 
-rem ---------- 8. Mở các cửa sổ chạy test tự động ----------
-echo.
-set "RUNTEST=Y"
-if not "!MODE!"=="1" set "RUNTEST=N"
-set /p "RUNTEST=Mở 3 cửa sổ chạy test tự động? [Y/N] (Enter = !RUNTEST!): "
-if /i not "!RUNTEST!"=="Y" goto :skiptests
+Start-Process "http://localhost:5173"
+if ($mode -eq "1") {
+    Start-Process "http://localhost:8025"
+}
 
-where node >nul 2>&1
-if errorlevel 1 (
-  echo [CẢNH BÁO] Chưa cài Node.js nên không chạy được test. Cài tại https://nodejs.org rồi chạy lại.
-  goto :skiptests
-)
-if not exist "Backend\node_modules\mysql2" (
-  echo Đang cài thư viện cho test - npm install...
-  pushd Backend
-  call npm install
-  popd
-)
+# 6. Chạy test tự động ngay trong cửa sổ hiện tại (không mở cửa sổ mới)
+Write-Host ""
+$defaultTest = if ($mode -eq "1") { "Y" } else { "N" }
+$runTest = Read-Host "Chạy 3 bộ test tự động ngay trong cửa sổ này? [Y/N] (Enter = $defaultTest)"
+if ([string]::IsNullOrWhiteSpace($runTest)) { $runTest = $defaultTest }
 
-call :sub_kill_tests
-md "%TEMP%\ibanking_tests" >nul 2>&1
+if ($runTest -match '^[yY]$') {
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+        Write-Host "[CẢNH BÁO] Chưa cài Node.js nên không chạy được test." -ForegroundColor Yellow
+    } else {
+        Push-Location "$ROOT\Backend"
+        if (-not (Test-Path "node_modules\mysql2")) {
+            Write-Host "Đang cài thư viện cho test - npm install..." -ForegroundColor Cyan
+            npm install
+        }
+        Write-Host ""
+        Write-Host "============================================================" -ForegroundColor Cyan
+        Write-Host "  [1/3] TEST AUTH + TUITION (node test-all.js)" -ForegroundColor Cyan
+        Write-Host "============================================================" -ForegroundColor Cyan
+        node test-all.js
 
-start "TEST-1-AUTH-TUITION" cmd /k call "%~f0" __run_test 1 TEST-1-AUTH-TUITION test-all.js
-start "TEST-2-PAYMENT" cmd /k call "%~f0" __run_test 2 TEST-2-PAYMENT test-payment.js
-start "TEST-3-E2E" cmd /k call "%~f0" __run_test 3 TEST-3-E2E test-e2e.js
-echo Đã mở 3 cửa sổ test. Chúng chạy lần lượt 1 → 2 → 3 và sẽ được đóng khi dừng hệ thống.
-:skiptests
-pause
-endlocal
-exit /b 0
+        Write-Host ""
+        Write-Host "============================================================" -ForegroundColor Cyan
+        Write-Host "  [2/3] TEST PAYMENT + NOTIFICATION + CONCURRENCY (node test-payment.js)" -ForegroundColor Cyan
+        Write-Host "============================================================" -ForegroundColor Cyan
+        node test-payment.js
 
-rem ============================================================
-rem SUBROUTINE: Đóng các cửa sổ test
-rem ============================================================
-:sub_kill_tests
-powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '__run_test' -and $_.ProcessId -ne $PID } | ForEach-Object { taskkill /PID $_.ProcessId /T /F 2>$null | Out-Null }"
-if exist "%TEMP%\ibanking_tests" rd /s /q "%TEMP%\ibanking_tests" >nul 2>&1
-exit /b 0
+        Write-Host ""
+        Write-Host "============================================================" -ForegroundColor Cyan
+        Write-Host "  [3/3] TEST END-TO-END QUA GATEWAY (node test-e2e.js)" -ForegroundColor Cyan
+        Write-Host "============================================================" -ForegroundColor Cyan
+        node test-e2e.js
+        Pop-Location
+    }
+}
 
-rem ============================================================
-rem SUBROUTINE: Dừng toàn bộ hệ thống Docker & đóng cửa sổ test
-rem ============================================================
-:sub_stop
-echo.
-echo [1/2] Dừng hệ thống Docker...
-set "ANS=N"
-set /p "ANS=Xóa luôn dữ liệu database - down -v? [y/N]: "
-if /i "!ANS!"=="y" (
-  docker compose -f "%~dp0docker-compose.yml" -p ibanking down -v --remove-orphans
-) else (
-  docker compose -f "%~dp0docker-compose.yml" -p ibanking down --remove-orphans
-)
-echo   docker compose kết thúc, mã thoát: !errorlevel!
-echo.
-echo [2/2] Đóng các cửa sổ test...
-call :sub_kill_tests
-echo.
-echo Hoàn tất.
-pause
-endlocal
-exit /b 0
-
-rem ============================================================
-rem SUBROUTINE: Chạy 1 bộ test tuần tự trong cửa sổ riêng
-rem ============================================================
-:sub_run_test
-set "N=%~2"
-set "TITLE=%~3"
-set "TESTFILE=%~4"
-set "MK=%TEMP%\ibanking_tests"
-title !TITLE!
-cd /d "%~dp0Backend"
-
-for /f "usebackq" %%P in (`powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId"`) do >"%MK%\!N!.pid" echo %%P
-
-if "!N!"=="1" goto :do_run_test
-set /a PREV=N-1
-echo [!TITLE!] Đang chờ bộ test trước đó chạy xong (các bộ test dùng chung dữ liệu mẫu nên chạy tuần tự)...
-:wait_prev_test
-if exist "%MK%\!PREV!.done" goto :do_run_test
-timeout /t 2 /nobreak >nul
-goto :wait_prev_test
-
-:do_run_test
-echo.
-echo ============================================================
-echo   !TITLE!  -  node !TESTFILE!
-echo ============================================================
-node !TESTFILE!
-set "RC=!errorlevel!"
->"%MK%\!N!.done" echo done
-echo.
-echo ============================================================
-if "!RC!"=="0" (echo   KẾT QUẢ: PASS) else (echo   KẾT QUẢ: FAIL - mã thoát !RC!)
-echo   Cửa sổ này sẽ được đóng khi dừng hệ thống qua start-all.bat
-echo ============================================================
-title !TITLE!
-endlocal
-exit /b !RC!
+Write-Host ""
+Read-Host "Nhấn Enter để đóng cửa sổ này"
