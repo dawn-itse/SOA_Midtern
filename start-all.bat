@@ -126,7 +126,7 @@ echo.
 echo   MySQL     : host localhost, cổng 3307, user root, mật khẩu password
 echo               (user riêng: auth_user, tuition_user, payment_user, notification_user)
 echo.
-echo   Tài khoản demo : nguyenvana / password123
+echo   Tài khoản demo : nguyenvana / password123, tranthib / password123
 echo   MSSV mẫu       : 524H0024, 524H0129
 echo.
 echo   Dừng hệ thống     : stop-all.bat  (đồng thời đóng các cửa sổ test)
