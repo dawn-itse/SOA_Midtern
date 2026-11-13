@@ -84,10 +84,10 @@ const PaymentTab = ({ isOpen, onClose, currentAccount, currentStudent, feeRecord
                                         <span className="block text-[11px] text-slate-400 uppercase font-semibold mb-0.5">Mã khoản phí (FeeID)</span>
                                         <span className="text-[14px] font-semibold text-slate-700">{feeRecord.feeId}</span>
                                     </div>
-                                    <div className="bg-white/5 border border-borderGlass rounded-lg px-3.5 py-2.5">
+                                    {/* <div className="bg-white/5 border border-borderGlass rounded-lg px-3.5 py-2.5">
                                         <span className="block text-[11px] text-slate-400 uppercase font-semibold mb-0.5">Mã định danh (UID)</span>
                                         <span className="text-[14px] font-semibold text-slate-700">{feeRecord.uid}</span>
-                                    </div>
+                                    </div> */}
                                     <div className="bg-white/5 border border-borderGlass rounded-lg px-3.5 py-2.5">
                                         <span className="block text-[11px] text-slate-400 uppercase font-semibold mb-0.5">Loại học phí (TypeOfFee)</span>
                                         <span className="text-[14px] font-semibold text-slate-700">{feeRecord.typeOfFee}</span>

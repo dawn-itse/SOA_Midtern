@@ -115,7 +115,7 @@ API nội bộ (`/internal/*`, notification) xem [docs/internal-api-contract.md]
 | 2 | `Backend/test-payment.js` | notification + payment, email Mailpit, schema, quy tắc OTP, Saga, **CONCURRENCY A** (một tài khoản trả đồng thời nhiều khoản, số dư chỉ đủ một khoản) và **CONCURRENCY B** (nhiều tài khoản cùng trả một khoản học phí) |
 | 3 | `Backend/test-e2e.js` | E2E qua API Gateway: đăng nhập → tra cứu → thanh toán → OTP email → biên lai → lịch sử, idempotency, truy vết |
 
-Test tự kiểm tra stack đã chạy chưa và báo rõ nếu thiếu. Nhóm test Mailpit ghi `[SKIP]` (không tính là lỗi) khi hệ thống không gửi mail qua Mailpit. Trên macOS/Linux (không có `start-all.bat`): với stack Docker đang chạy, dùng `cd Backend && npm install && npm test`. Muốn chạy test khi dùng cách chạy thủ công, xem mục 3 (bước 6).
+Test tự kiểm tra stack đã chạy chưa và báo rõ nếu thiếu. Nhóm test Mailpit ghi `[SKIP]` (không tính là lỗi) khi hệ thống không gửi mail qua Mailpit. 
 
 ## 8. Sự cố thường gặp
 
@@ -123,8 +123,6 @@ Test tự kiểm tra stack đã chạy chưa và báo rõ nếu thiếu. Nhóm t
 - *Không thấy dữ liệu mẫu / sai dữ liệu:* script nạp DB chỉ chạy lần đầu → `docker compose down -v` rồi chạy lại.
 - *API trả 401 `INVALID_INTERNAL_SECRET` khi gọi trực tiếp `/internal`:* thêm header `x-internal-secret: soa_internal_secret`. *Trả 401 `UNAUTHORIZED`:* đăng nhập lại để lấy token mới (token hết hạn sau 2 giờ).
 - *Đổi `JWT_SECRET` / `INTERNAL_API_SECRET` nhưng vẫn 401:* phải đặt cùng một giá trị cho tất cả service liên quan rồi `docker compose up -d --force-recreate`.
-- *Chạy thủ công, test báo không kết nối được MySQL:* test mặc định dùng cổng 3307 (Docker); MySQL cài thủ công thường ở 3306 nên đặt `DB_PORT=3306` (xem mục 3, bước 6).
-- *Chạy thủ công, frontend báo lỗi mạng:* kiểm tra đã tạo `Frontend/.env.local` (hoặc đã chạy gateway) và đã khởi động lại `npm run dev` sau khi sửa.
 - *Frontend báo không kết nối được dịch vụ:* chạy `docker compose ps` và `docker compose logs <service>`.
 - *Không nhận được mail Gmail:* kiểm tra App Password (của Gmail gửi) và `MAIL_TO_OVERRIDE`; `GET http://localhost:8004/health` cho biết chế độ mail đang dùng, `docker compose logs notification-service` cho biết lỗi gửi.
 
@@ -138,14 +136,13 @@ Có `CHECK`: `users.balance >= 0`, `tuition_fees.price > 0`, `transactions.amoun
 
 ## 11. Tài liệu thiết kế
 
-Toàn bộ sơ đồ nằm trong [docs/diagrams/]
+Toàn bộ sơ đồ nằm trong [docs/diagram/]
 
 1. Use Case Diagram
 2. ERD của 4 database (kèm bảng ownership)
 3. **Microservices Architecture Diagram** (gateway, 4 service, database, SMTP, luồng gọi) và lý do chọn kiến trúc
-4. Sequence diagram luồng thanh toán (gồm nhánh Saga)
+4. Sequence diagram 
 5. Máy trạng thái giao dịch (FSM)
-6. Hai tình huống concurrency và cơ chế xử lý
 
 Đặc tả API: Swagger UI http://localhost:8080 (`docs/api/*.yaml`) và [docs/internal-api-contract.md](docs/internal-api-contract.md).
 

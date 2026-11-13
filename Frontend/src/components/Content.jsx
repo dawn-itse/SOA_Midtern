@@ -65,8 +65,8 @@ const Content = ({student,onPayClick}) => {
                         </td>
                         <td className="p-4">
                             <span className="font-mono text-[12px] bg-white/5 px-2 py-0.5 rounded text-brand-primary">{fee.feeId}</span>
-                            <br />
-                            <small className="text-slate-500 text-[11px] mt-1 block">{fee.uid}</small>
+                            {/* <br /> */}
+                            {/* <small className="text-slate-500 text-[11px] mt-1 block">{fee.uid}</small> */}
                         </td>
                         <td className="p-4">
                             <span className="text-brand-gold text-[13px] font-semibold">{fee.expiredAt}</span>

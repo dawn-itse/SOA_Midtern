@@ -35,10 +35,10 @@ ON DUPLICATE KEY UPDATE student_name=VALUES(student_name), faculty=VALUES(facult
 
 -- Các khoản học phí
 INSERT INTO tuition_fees (fee_id, student_id, price, type_of_fee, status, description, expired_at) VALUES
-('FEE-2024-HK1-0089', '524H0129', 8500000.00, 'Học phí Học kỳ I (2024 - 2025)', 'Chưa thanh toán', 'Bao gồm 15 tín chỉ lý thuyết + 3 tín chỉ thực hành', '2026-10-15 23:59:59'),
-('FEE-2024-LAB-0012', '524H0129', 1200000.00, 'Lệ phí Thực hành Lab Cloud & SOA', 'Chưa thanh toán', 'Chi phí máy chủ Cloud Lab & bản quyền phần mềm', '2026-10-20 23:59:59'),
-('FEE-2024-BHYT-004', '524H0129', 893000.00, 'Bảo hiểm Y tế Sinh viên 2024', 'Đã thanh toán', 'Khoản phí Bảo hiểm y tế bắt buộc', '2024-08-30 23:59:59'),
-('FEE-2024-HK1-0092', '524H0024', 12200000.00, 'Học phí Học kỳ I (2024 - 2025)', 'Chưa thanh toán', 'Học phí Khoa Tài chính Ngân hàng - 20 tín chỉ', '2026-10-20 23:59:59'),
-('FEE-2024-TV-0088', '524H0024', 600000.00, 'Phí Thư viện Digital & Giáo trình', 'Chưa thanh toán', 'Quyền truy cập thư viện số toàn cầu', '2026-10-25 23:59:59'),
-('FEE-2024-HK1-0104', '524H0041', 5400000.00, 'Học phí Học kỳ I (2024 - 2025)', 'Chưa thanh toán', 'Học phí Khóa học Ngoại ngữ Tiếng Anh Chuyên ngành', '2026-10-25 23:59:59')
+('FEE-2024-HK1-0089', '524H0129', 8500000.00, 'Học phí Học kỳ I (2024 - 2025)', 'Chưa thanh toán', 'Bao gồm 15 tín chỉ lý thuyết + 3 tín chỉ thực hành', '2026-11-16 23:59:59'),
+('FEE-2024-LAB-0012', '524H0129', 1200000.00, 'Lệ phí Thực hành Lab Cloud & SOA', 'Chưa thanh toán', 'Chi phí máy chủ Cloud Lab & bản quyền phần mềm', '2026-11-16 23:59:59'),
+('FEE-2024-BHYT-004', '524H0129', 893000.00, 'Bảo hiểm Y tế Sinh viên 2024', 'Đã thanh toán', 'Khoản phí Bảo hiểm y tế bắt buộc', '2026-11-22 23:59:59'),
+('FEE-2024-HK1-0092', '524H0024', 12200000.00, 'Học phí Học kỳ I (2024 - 2025)', 'Chưa thanh toán', 'Học phí Khoa Tài chính Ngân hàng - 20 tín chỉ', '2026-11-20 23:59:59'),
+('FEE-2024-TV-0088', '524H0024', 600000.00, 'Phí Thư viện Digital & Giáo trình', 'Chưa thanh toán', 'Quyền truy cập thư viện số toàn cầu', '2026-11-25 23:59:59'),
+('FEE-2024-HK1-0104', '524H0041', 5400000.00, 'Học phí Học kỳ I (2024 - 2025)', 'Chưa thanh toán', 'Học phí Khóa học Ngoại ngữ Tiếng Anh Chuyên ngành', '2026-11-25 23:59:59')
 ON DUPLICATE KEY UPDATE price=VALUES(price);
